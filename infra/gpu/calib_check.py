@@ -47,6 +47,9 @@ p.add_argument("--dataset", type=Path, required=True)
 p.add_argument("--map", type=Path, required=True)
 p.add_argument("--per-episode", type=int, default=12)
 p.add_argument("--max-episodes", type=int, default=0, help="0 = all")
+p.add_argument("--guidance", nargs=2, type=float, metavar=("VIDEO", "ACTION"),
+               help="override the checkpoint's guidance (3 3) to test e.g. 1 1 (half the compute)")
+p.add_argument("--no-raw", action="store_true", help="skip the raw-state comparison (half the time)")
 p.add_argument("--out", type=Path, default=Path("/workspace/outputs/calib-check"))
 p.add_argument("--scene-key", default="observation.images.scene")
 p.add_argument("--wrist-key", default="observation.images.wrist")
@@ -77,6 +80,9 @@ def frame_at(ep_row, key, t_in_ep):
 
 
 policy = load_policy(CKPT, revision=REV).to("cuda")
+if a.guidance:
+    policy.config.guidance_scale, policy.config.guidance_scale_action = a.guidance
+plan_ms = []
 rows = {"mapped": [], "raw": []}
 t0 = time.time()
 for i_ep, (_, e) in enumerate(eps.iterrows()):
@@ -92,11 +98,14 @@ for i_ep, (_, e) in enumerate(eps.iterrows()):
         st = np.asarray(r["observation.state"], np.float32)
         rec = np.stack(d["action"].to_numpy()[fi + 1: fi + 43]).astype(np.float32)
         imgs = {"scene": frame_at(e, a.scene_key, float(r.timestamp)), "wrist": frame_at(e, a.wrist_key, float(r.timestamp))}
-        for mode in ("mapped", "raw"):
+        for mode in (("mapped",) if a.no_raw else ("mapped", "raw")):
             s_in = jm.to_model(st) if mode == "mapped" else st
             np.savez("/tmp/calib_obs.npz", **{"images.scene": imgs["scene"], "images.wrist": imgs["wrist"], "state": s_in})
+            batch = load_observation("/tmp/calib_obs.npz", policy.config, task, "cuda")
+            torch.cuda.synchronize(); tp = time.perf_counter()
             with torch.no_grad():
-                pred = policy.predict_action_chunk(load_observation("/tmp/calib_obs.npz", policy.config, task, "cuda"))
+                pred = policy.predict_action_chunk(batch)
+            torch.cuda.synchronize(); plan_ms.append((time.perf_counter() - tp) * 1000)
             pred = pred.float().cpu().numpy()[0]
             if mode == "mapped":
                 pred = jm.to_ours(pred)
@@ -123,12 +132,14 @@ def summarize(rs):
 
 
 report = {"dataset": str(root), "map": str(a.map), "map_meta": jm.meta, "samples": len(rows["mapped"]),
-          "checkpoint": f"{CKPT}@{REV[:8]}", "mapped": summarize(rows["mapped"]), "raw": summarize(rows["raw"])}
+          "guidance": list(a.guidance) if a.guidance else "checkpoint (3, 3)",
+          "plan_ms_p50": round(float(np.median(plan_ms[1:] or plan_ms)), 1),
+          "checkpoint": f"{CKPT}@{REV[:8]}", "mapped": summarize(rows["mapped"]), "raw": summarize(rows["raw"]) if rows["raw"] else None}
 (a.out / "report.json").write_text(json.dumps(report, indent=1))
-lines = [f"# Calibration check {time.strftime('%Y-%m-%d %H:%M')}", "", f"dataset `{root}`, map `{a.map}`, {report['samples']} samples", "",
+lines = [f"# Calibration check {time.strftime('%Y-%m-%d %H:%M')}", "", f"dataset `{root}`, map `{a.map}`, {report['samples']} samples, guidance {report['guidance']}, plan p50 {report['plan_ms_p50']} ms", "",
          "| joint | corr mapped | corr raw | start gap mapped | err mapped | err raw | verdict (mapped) |", "|---|---|---|---|---|---|---|"]
 for name in JOINTS:
-    m, r = report["mapped"][name], report["raw"][name]
+    m = report["mapped"][name]; r = (report["raw"] or {}).get(name, {"corr": "-", "err_mean": "-"})
     lines.append(f"| {name} | {m['corr']} | {r['corr']} | {m['start_gap_median']} | {m['err_mean']} | {r['err_mean']} | {m['verdict']} |")
 lines += ["", "Read per joint: corr > 0.2 = model moves with the operator (map plausible); corr < -0.2 = sign reversed in the map; "
           "corr near 0 or err much worse than raw = offset/scale suspect. Compare against the raw columns: the map must not be "
