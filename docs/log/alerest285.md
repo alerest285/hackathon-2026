@@ -22,3 +22,4 @@ Append-only, newest at the bottom. One line per event.
 - 2026-10-17T13:12Z alerest285 [T02] (claude-code) spend limit $150 set by alerest285 on project 'Just Ship It' (AWS Settings, screenshot 17.10): $0 spent, $100 credits available
 - 2026-10-17T13:14Z alerest285 [T02] (claude-code) teammates saadl27 + joelleayoub: invited as repo collaborators (write), added to members.txt; Runpod pod create refused: account balance too low (Ale to top up)
 - 2026-10-17T13:39Z alerest285 [T13] (claude-code) FIRST INFERENCE PASS on Runpod pod rmhs4cu2cejemv (H100 80GB, EU-FR-1, $3.99/h, ssh root@<pod-host> -p <ssh-port>): flux-3-action-so101 @0713a7a, synthetic obs, eager: load 123 s, first plan 1.94 s, then p50 0.58 s / max 0.61 s per 42x6 chunk, peak GPU 25.9 GB. Weights in /workspace/hf (so101 13 GB + base encoders).
+- 2026-10-17T13:39Z alerest285 [T13] (claude-code) release (done): SO-101 smoke PASS on Runpod H100: 0.58 s/chunk eager, 25.9 GB, load 123 s
