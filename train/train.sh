@@ -108,6 +108,10 @@ if [ "$mode" = resume ]; then
   if [ -n "$wandb" ]; then
     [ -n "${WANDB_API_KEY:-}" ] || grep -qs api.wandb.ai ~/.netrc || { echo "--wandb needs WANDB_API_KEY in the env (or wandb login)" >&2; exit 2; }
     extra+=" --wandb.enable=true --wandb.entity=${wandb%%/*} --wandb.project=${wandb#*/} --wandb.disable_artifact=true"
+    # Same destination as the saved run: LeRobot continues its W&B run. New or changed destination: the pinned logger
+    # would look up the old run id and fail, so start a fresh W&B run that allows resume (codex review 19:5xZ).
+    same=$(python3 -c "import json;w=json.load(open('$cfg')).get('wandb') or {};print(int(bool(w.get('enable')) and w.get('entity')=='${wandb%%/*}' and w.get('project')=='${wandb#*/}' and bool(w.get('run_id'))))")
+    [ "$same" = 1 ] || extra+=" --wandb.run_id=${name}-r$(date -u +%H%M%S) --wandb.resume=allow"
   fi
   [ -n "$workers" ] && warm_venv
   echo "cd \"$LEROBOT_DIR\" && $ENV_PREFIX $PY -m lerobot.scripts.lerobot_train --config_path=$cfg --resume=true$extra" > "$cmd"
