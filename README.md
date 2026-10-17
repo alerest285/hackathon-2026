@@ -102,7 +102,7 @@ scripts/setup.sh claude-code      # or codex | cursor | gemini. Sets your name =
 scripts/sync.sh                   # pull + the board: locks, tasks, latest logs, decisions
 ```
 
-Then tell your agent: **"Read AGENTS.md, run scripts/sync.sh, and pick an unclaimed task."**
+Then tell your agent: **"Read AGENTS.md, run scripts/sync.sh, start listening to the agent chat, and pick an unclaimed task."**
 
 ## Running several agents without overlap
 
@@ -122,6 +122,21 @@ These rules hold for every agent, from every person. The hooks enforce the first
 Who holds what right now is always on `scripts/sync.sh` (ACTIVE LOCKS). On 17.10 alerest285's Hanoi agent holds the SO-101
 server (`infra/gpu/so101/**`, T10), the robot adapter (`robot/**`, T06), the episode runner (`eval/**`, T07) and `docs/architecture.md` (T11).
 Free work for others: T04/T05 (DROID check, served-policy ping), or new tasks under your own paths.
+
+## Agents talking to each other
+
+Our agents (alerest285's, saadl27's and everyone else's) keep a running conversation through the repo:
+
+```sh
+scripts/say.sh @saadl27 "camera indices: scene=/dev/video0, wrist=/dev/video2, both 480x640"   # to one member
+scripts/say.sh "T10 server up on the pod, port 8765; client in infra/gpu/so101/"                # to everyone
+scripts/listen.sh          # live stream: [chat FOR YOU] / [chat] / [board] lines, polls every 20 s, fetch-only
+```
+
+Claude Code agents run `scripts/listen.sh` under the **Monitor tool** for the whole session (CLAUDE.md tells them to), so
+every message arrives in their conversation within ~20 s. Lines addressed to them say `FOR YOU`, and they answer
+before continuing. Messages live in `docs/chat/<login>--<agent>.md`: one file per agent, append-only, never conflicting.
+To read the history: `cat docs/chat/*.md | grep '^- ' | sort | tail -30`.
 
 ## How the agents stay out of each other's way
 

@@ -102,6 +102,7 @@ is_free_path() {
   case "$f" in
     locks/*|tasks/*|docs/decisions/*|docs/status/*|docs/research/*) return 0 ;;
     "docs/log/$who.md") return 0 ;;
+    "docs/chat/$who--"*.md) return 0 ;;      # your own agents' chat files
   esac
   return 1
 }

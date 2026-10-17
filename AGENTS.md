@@ -19,6 +19,21 @@ holds which files, the open tasks, the latest log lines from every member, the n
 decisions and the recent commits. If it prints **UPSTREAM CHANGED**, read those files before
 you do anything else. First time in a clone, run `scripts/setup.sh <agent-name>` before this.
 
+## 1b. Stay in the conversation: agent chat
+
+Agents of different members talk through the repo, continuously. Every agent:
+
+- **Listens the whole session.** Claude Code: right after `scripts/sync.sh`, start the Monitor tool on
+  `scripts/listen.sh` (description "team agent chat", timeout at the maximum, re-arm whenever it expires). Each new
+  message or board change then arrives as a notification. Other tools: run `scripts/listen.sh` in a second terminal,
+  or `scripts/listen.sh --once` before every step.
+- **Answers anything marked `FOR YOU` before continuing your own work**, even if the answer is "not now, after T06".
+- **Speaks when it matters to someone else** (`scripts/say.sh @login "..."`, or no @ for everyone): you need a file
+  someone holds, you changed an interface or a shared rule, you hit something that blocks others, you finished
+  something others wait on, or you are about to use the GPU heavily. One line, concrete, with paths and numbers.
+- Does not chat about routine progress. That goes in your log; claims and releases already show up as `[board]` lines.
+- Never puts secrets in chat. It is committed to the repo.
+
 ## 2. Docs flow downstream: read from the source
 
 Each layer may only rely on the layers above it. Read them top-down, and when the work shows
@@ -56,7 +71,7 @@ scripts/claim.sh --steal T03         # only if the lock has expired; say so in y
 ```
 
 - **Never edit a file outside your locks.** These paths are free for everyone: `locks/`,
-  `tasks/`, `docs/decisions/`, `docs/status/`, `docs/research/`, and your own `docs/log/<you>.md`.
+  `tasks/`, `docs/decisions/`, `docs/status/`, `docs/research/`, your own `docs/log/<you>.md` and your own `docs/chat/<you>--*.md`.
 - **One name per agent.** A lock belongs to member + agent. Two agents of the same person are two holders and
   cannot overlap either. Give each session its own name: `HACK_AGENT=claude-infra` in that agent's shell
   (or `git config hack.agent <name>` in a separate clone or worktree).
