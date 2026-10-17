@@ -28,8 +28,9 @@ first, meaning the released checkpoints with no fine-tuning. Fine-tuning comes l
 
 ## Constraints
 
-- **Compute is ours to provide**: one AWS `p5.4xlarge` (1× H100 80 GB) on spot, **$150 total**,
-  inference only (decision 02, `infra/aws/README.md`). That is roughly 40–55 GPU-hours, so stop the box when it is idle.
+- **Compute is ours to provide**: one AWS `p5.4xlarge` (1× H100 80 GB) on spot in **eu-north-1**, **$150 total**,
+  inference only (decisions 02 and 04, `infra/aws/README.md`). That is about 47 GPU-hours at $3.16/h, so stop the box when it is idle.
+  Spot needs the AWS project on the paid plan; the free plan blocks it. The fallback is on-demand at $7.36/h, about 20 h.
 
 ## Out of scope for now
 

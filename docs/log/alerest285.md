@@ -3,3 +3,5 @@
 Append-only, newest at the bottom. One line per event.
 
 - 2026-10-17T11:23Z alerest285 [-] (claude-code) bootstrap: repo created; lock test with two local clones passed: claim, refusal, overlap refusal, simultaneous-claim race (loser retried and backed off), pre-commit block (foreign + unclaimed), edit guard exit 2, release refuses dirty paths, parallel new-task ids T08/T09 distinct, CI per-commit check flags the foreign commit
+- 2026-10-17T12:16Z alerest285 [T02] (claude-code) aws: profile hackathon signed in (project, eu-north-1, FREE plan, $100 credits); agent toolkit installed (24 skills, aws-mcp for Claude/Codex/Gemini, AWS_MCP_PROXY_PROFILES=hackathon); quota requests P spot 16 + P on-demand 16 PENDING; dry run: on-demand p5.4xlarge allowed, spot denied by free-plan SCP; spot $3.16/h, on-demand $7.36/h
+- 2026-10-17T12:16Z alerest285 [T03] (claude-code) scripts: region eu-north-1 + profile hackathon defaults, HACK_MARKET spot|ondemand, dry-run preflight in up.sh; AMI ami-0b00ba21bb3194a5a /dev/sda1 verified

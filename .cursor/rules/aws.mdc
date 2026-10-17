@@ -1,0 +1,8 @@
+---
+description: AWS Agent Toolkit rules for this project (eu-north-1, profile hackathon)
+globs: infra/aws/**
+alwaysApply: false
+---
+<!-- BEGIN AWS Agent Toolkit rules -->
+Follow AGENTS.md section 9 (AWS Agent Toolkit rules, new AWS experience) for any AWS work. AGENTS.md sections 1–8 take precedence.
+<!-- END AWS Agent Toolkit rules -->

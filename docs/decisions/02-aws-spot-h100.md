@@ -1,6 +1,6 @@
 # 02. Compute: one AWS p5.4xlarge (1× H100) on persistent spot, $150
 
-**Date:** 2026-10-17 · **Status:** accepted · **Author:** alerest285
+**Date:** 2026-10-17 · **Status:** accepted, region and plan amended by 04 · **Author:** alerest285
 
 ## Context
 

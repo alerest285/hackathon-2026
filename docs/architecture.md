@@ -5,7 +5,7 @@
 ## Components
 
 ```
- robot or sim machine                          AWS p5.4xlarge spot (1x H100, DLAMI)
+ robot or sim machine                          AWS p5.4xlarge spot (1x H100) eu-north-1
  ┌──────────────────────────┐   ssh -L 8000   ┌────────────────────────────────────┐
  │ robot/   adapter         │ ──────────────► │ flux-action serve-robolab :8000    │
  │  cameras + joint state   │  WebSocket,     │  (BFL repo, pinned in infra/gpu/)  │

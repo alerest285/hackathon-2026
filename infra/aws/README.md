@@ -1,24 +1,35 @@
 # AWS GPU: one H100 on spot, $150 budget
 
-One shared `p5.4xlarge` (1× H100 80 GB, 16 vCPU), persistent spot with stop-on-interrupt,
-so the weights survive on its 250 GB disk. Inference only. Spot was about $2.6–3.8/h in
-us-east-1 in Oct 2026, against $6.88 on-demand, so $150 buys roughly 40–55 GPU-hours. Check live: `infra/aws/cost.sh`.
+One shared `p5.4xlarge` (1× H100 80 GB, 16 vCPU) in **eu-north-1**, persistent spot with stop-on-interrupt,
+so the weights survive on its 250 GB disk. Inference only. Spot was $3.16/h on 17.10.2026 (eu-north-1c), against $7.36 on-demand,
+so $150 buys about 47 GPU-hours on spot or 20 on on-demand. Check live: `infra/aws/cost.sh`.
 
-## Steps (in order; step 3 is the slow one, so start it first)
+## Steps
 
-1. **Account (a human, ~10 min).** Sign up at https://aws.amazon.com (needs a card and a phone).
-   Turn on MFA for the root user. Then create an admin user under IAM Identity Center (or an
-   IAM user with an access key) and stop using root.
-2. **CLI.** `aws configure sso` (Identity Center) or `aws configure` (access key), region `us-east-1`.
-   Check with `aws sts get-caller-identity`.
-3. **GPU quota (can take hours to days).** New accounts have **0** vCPUs for P-type spot
-   instances, so no H100 will launch until AWS approves an increase.
-   `infra/aws/quota.sh --request` asks for 16 vCPUs, which is one p5.4xlarge, for both spot and on-demand.
-   In the support case, say it is for a short ML inference project with a $150 budget.
-   If spot is still refused near the deadline, on-demand at $6.88/h gives about 20 h.
-4. **Budget alarm.** `infra/aws/budget.sh you@mail [teammate@mail ...]` sends emails at 50/80/100 % of $150.
-5. **Members.** Put every teammate's GitHub login in `members.txt`. Their public keys from
-   `github.com/<login>.keys` are installed at first boot. Edit the list before the first `up.sh`.
+The project is **alerest285's AWS project, eu-north-1 (Stockholm), CLI profile `hackathon`**. It uses the new AWS
+experience: management (billing, spend limits, team members) happens in [AWS Settings](https://settings.aws.com/).
+A project can only create resources in its one region. Decision 04 has the reasons and the measured facts.
+
+| # | Step | State (17.10) |
+|---|---|---|
+| 1 | Sign in: `aws login --profile hackathon` (browser). Credentials last 12 h and renew for 90 days without the browser | done |
+| 2 | AWS Agent Toolkit: `aws configure agent-toolkit --yes --region us-east-1 --profile hackathon`, then add `"env": {"AWS_MCP_PROXY_PROFILES": "hackathon"}` to each `aws-mcp` entry | done on alerest285's Mac |
+| 3 | **Upgrade the project to the paid plan** (AWS Settings → Billing). The free plan denies every spot launch, which was checked with `--dry-run` | owner's step |
+| 4 | **GPU quota.** It was 0. Requested 16 vCPU for "All P Spot Instance Requests" (L-7212CCBC) and "Running On-Demand P instances" (L-417A185B). AWS allows two open requests at a time | pending AWS review |
+| 5 | Spend guard: set a **$150 spend limit** in AWS Settings (it pauses the project when reached), plus `infra/aws/budget.sh you@mail` for email alerts | owner's step |
+| 6 | Teammates: invite them as **team members** in AWS Settings (by email) only if they must run AWS commands. For ssh-only access, adding their GitHub login to `members.txt` is enough | as needed |
+
+Check the state any time:
+
+```sh
+aws freetier get-account-plan-state --profile hackathon --query accountPlanType     # FREE or PAID
+infra/aws/quota.sh                                                                   # P quotas in eu-north-1
+aws service-quotas list-requested-service-quota-change-history --service-code ec2 --profile hackathon --region eu-north-1 \
+  --query 'RequestedQuotas[].[QuotaName,DesiredValue,Status]' --output table
+```
+
+`up.sh` does a free `--dry-run` before any launch. With the free plan's spot block in place, it stops with a message instead of failing halfway.
+To fall back to on-demand ($7.36/h in eu-north-1): `HACK_MARKET=ondemand infra/aws/up.sh`.
 
 ## Daily use
 
@@ -41,9 +52,14 @@ then `bash hackathon-2026/infra/gpu/smoke-droid.sh`. Serve inside tmux with `bas
 - **Log every up and down** with its price (AGENTS.md section 8).
 - Whoever holds the T03 lock owns the instance's lifecycle. Everyone else asks before stopping it.
 
+## Verified on 17.10.2026 (eu-north-1, without launching anything)
+
+- `p5.4xlarge` is offered in eu-north-1a/b/c. Spot was $3.16/h (1c) and on-demand $7.36/h (pricing API).
+- The DLAMI SSM parameter resolves to `ami-0b00ba21bb3194a5a`, "Deep Learning Base OSS Nvidia Driver GPU AMI (Ubuntu 24.04) 20261006". Its root device is `/dev/sda1`.
+- Dry run on the free plan: on-demand p5.4xlarge is **allowed**, and spot is **denied** by the project's SCP, for every instance type.
+- Default subnets exist in all three zones.
+
 ## Not verified yet
 
-The scripts are syntax-checked only: no AWS account existed when they were written. Specifically:
-the DLAMI SSM parameter (`base-oss-nvidia-driver-gpu-ubuntu-24.04`, which lists P5 as supported),
-the root device name `/dev/sda1`, and starting a stopped persistent spot instance. T03 is
-where these get checked; fix the scripts and log what was wrong.
+- Spot after the paid-plan upgrade. Re-run the dry run, or just `infra/aws/up.sh`, which checks first.
+- The first real boot: user-data keys, the idle stop, and starting a stopped persistent spot instance. That is task T03.
