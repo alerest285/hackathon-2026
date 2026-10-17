@@ -1,8 +1,8 @@
 ---
 id: T29
 title: lib.sh: git network stall timeout
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - scripts/lib.sh
