@@ -1,8 +1,8 @@
 ---
 id: T03
 title: Launch the H100 and bootstrap flux-action
-status: doing
-owner: alerest285
+status: todo
+owner: 
 depends: T02
 paths:
   - infra/aws/*.sh
@@ -29,3 +29,12 @@ The holder of this lock owns the instance's lifecycle.
 
 ## Notes and handoffs (append, newest last)
 
+### Handoff 2026-10-17 14:30 (alerest285 / claude-code)
+
+- Scripts are final for eu-north-1 and checked against the live project without launching: AMI `ami-0b00ba21bb3194a5a` (/dev/sda1),
+  p5.4xlarge offered in a/b/c, on-demand dry run allowed, spot denied until the plan upgrade. `up.sh` dry-runs first and
+  stopped cleanly (0 instances).
+- Start the moment T02 clears: `infra/aws/up.sh` (spot) or `HACK_MARKET=ondemand infra/aws/up.sh`. Then `infra/aws/ssh.sh`.
+  On the box: clone, `bash hackathon-2026/infra/gpu/bootstrap.sh`, accept the HF licenses + `uv run hf auth login`. Log id, zone, $/h.
+- Not yet observed on a real box: user-data (GitHub keys, idle stop), stop → start of a persistent spot instance, bootstrap on Ubuntu 24.04.
+- 2026-10-17T13:06Z · alerest285 · todo: scripts final + dry-run verified on the live project; first boot waits on T02. See handoff.
