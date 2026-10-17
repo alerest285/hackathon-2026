@@ -91,7 +91,7 @@ if [ "$mode" = resume ]; then
   have=$(sha "/workspace/datasets/$dname/prepare_manifest.json" 2>/dev/null || echo missing)
   [ "$have" = "$want" ] || { echo "dataset /workspace/datasets/$dname changed since $name started (manifest $have, run trained on $want): not resuming" >&2; exit 1; }
   for m in "$prov"/maps/*.json; do
-    [ -e "$m" ] || continue   # no maps: a --no-map dataset
+    [ -e "$m" ] || { echo "run $name has no provenance maps: prepare.py always copies them, refusing to resume" >&2; exit 1; }
     [ "$(sha "$m")" = "$(basename "$m" .json)" ] || { echo "provenance map $m does not match its hash" >&2; exit 1; }
   done
   staged=$(stage_dataset "$dname" "$stage")
