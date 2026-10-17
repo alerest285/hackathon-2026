@@ -76,8 +76,13 @@ warm_venv() {
 }
 in_tmux() {  # <session> <cmd file> <log>: EXIT carries the trainer's own status, not tee's
   # The W&B key reaches the session by name (update-environment copies it from this shell), never as an argv value.
-  [ -n "${WANDB_API_KEY:-}" ] && { tmux start-server; tmux set-option -ga update-environment " WANDB_API_KEY"; }
-  tmux new-session -d -s "$1" "bash $2 2>&1 | tee $3; echo EXIT \${PIPESTATUS[0]} >> $3"
+  # One tmux invocation: a fresh, empty server exits between separate calls and drops the option (codex 19:5xZ).
+  local body="bash $2 2>&1 | tee $3; echo EXIT \${PIPESTATUS[0]} >> $3"
+  if [ -n "${WANDB_API_KEY:-}" ]; then
+    tmux start-server \; set-option -ga update-environment " WANDB_API_KEY" \; new-session -d -s "$1" "$body"
+  else
+    tmux new-session -d -s "$1" "$body"
+  fi
   echo "tmux attach -t $1   (detach: Ctrl-b d).  Follow: tail -f $3 | grep -E 'step|loss|Error|EXIT'"
 }
 
