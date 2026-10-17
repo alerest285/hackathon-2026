@@ -1,8 +1,8 @@
 ---
 id: T24
 title: Calibration check: model vs Saad's teleop demos, per joint
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - infra/gpu/calib_check.py
