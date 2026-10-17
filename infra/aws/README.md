@@ -17,7 +17,7 @@ A project can only create resources in its one region. Decision 04 has the reaso
 | 2 | AWS Agent Toolkit: `aws configure agent-toolkit --yes --region us-east-1 --profile hackathon`, then add `"env": {"AWS_MCP_PROXY_PROFILES": "hackathon"}` to each `aws-mcp` entry | done on alerest285's Mac |
 | 3 | Paid plan (AWS Settings → Billing). It turned out spot stays denied on the paid plan too, so we run on-demand (decision 07) | done 17.10 |
 | 4 | **GPU quota.** It was 0. The one that matters is **"Running On-Demand P instances" (L-417A185B) ≥ 16**. P spot was also requested but is now moot | pending AWS review (cases opened 14:00) |
-| 5 | Spend guard: budget `hackathon-gpu` $150/month, alerts at 50/80/100 % + forecast to alerest285's mail (`infra/aws/budget.sh`). Also set a **$150 spend limit** in AWS Settings → Billing (it pauses the project when reached) | budget done; spend limit: owner |
+| 5 | Spend guard: budget `hackathon-gpu` $150/month, alerts at 50/80/100 % + forecast to alerest285's mail (`infra/aws/budget.sh`). Also set a **$150 spend limit** in AWS Settings → Billing (it pauses the project when reached) | **both done 17.10**: spend limit $150 on project "Just Ship It" (near the limit AWS denies `RunInstances`/`StartInstances`, so the box cannot be restarted past it) |
 | 6 | Teammates: invite them as **team members** in AWS Settings (by email) only if they must run AWS commands. For ssh-only access, adding their GitHub login to `members.txt` is enough | as needed |
 
 Check the state any time:

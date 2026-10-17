@@ -39,3 +39,4 @@ Human steps (sign-up, card, MFA) cannot be done by an agent. Log the quota reque
 - 2026-10-17T13:06Z · alerest285 · blocked: waiting on AWS quota review (2 cases open) + paid-plan upgrade by alerest285; budget done
 - 2026-10-17T13:09Z · alerest285/claude-code: plan PAID; spot denied on both plans, so on-demand (decision 07). Only blocker left: on-demand P quota (case open). Owner: set a $150 spend limit in AWS Settings.
 - 2026-10-17T13:09Z · alerest285 · blocked: only the on-demand P quota (case open) is left; plan PAID, budget live
+- 2026-10-17T13:12Z · alerest285/claude-code: spend limit $150 set (project "Just Ship It"). Left: on-demand P quota (case open).
