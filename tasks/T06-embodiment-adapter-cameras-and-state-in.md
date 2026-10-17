@@ -1,8 +1,8 @@
 ---
 id: T06
 title: Embodiment adapter: cameras and state in, actions out
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: T01, T05
 paths:
   - robot/**
