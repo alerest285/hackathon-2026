@@ -1,7 +1,7 @@
 ---
 id: T14
 title: README for the team + repo private
-status: doing
+status: done
 owner: alerest285
 depends: 
 paths:
@@ -23,3 +23,4 @@ TODO: one or two sentences.
 
 ## Notes and handoffs (append, newest last)
 
+- 2026-10-17T13:42Z · alerest285 · done: README + private repo + decision 08

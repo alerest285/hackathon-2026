@@ -25,3 +25,4 @@ Append-only, newest at the bottom. One line per event.
 - 2026-10-17T13:39Z alerest285 [T13] (claude-code) release (done): SO-101 smoke PASS on Runpod H100: 0.58 s/chunk eager, 25.9 GB, load 123 s
 - 2026-10-17T13:40Z alerest285 [T03] (claude-code) release (todo): compute is a Runpod H100 for now (status 2026-10-17-1545); AWS launch still waits on quota
 - 2026-10-17T13:41Z alerest285 [T14] (claude-code) repo made private; README rewritten for the team (pod access, status, join steps); AGENTS.md + project.md updated; decision 08 Runpod
+- 2026-10-17T13:42Z alerest285 [T14] (claude-code) release (done): README + private repo + decision 08
