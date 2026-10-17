@@ -1,8 +1,8 @@
 ---
 id: T02
 title: AWS account, GPU quota, budget alarm
-status: doing
-owner: alerest285
+status: blocked
+owner: 
 depends: 
 paths:
   - infra/aws/README.md
@@ -37,3 +37,5 @@ Human steps (sign-up, card, MFA) cannot be done by an agent. Log the quota reque
 - **Waiting on alerest285:** upgrade to the paid plan (AWS Settings → Billing); the free plan denies all spot. Then set a $150 spend limit there.
 - Still open: teammates' GitHub logins in `members.txt` (ssh), and AWS team-member invites only for those who run AWS commands.
 - 2026-10-17T13:06Z · alerest285 · blocked: waiting on AWS quota review (2 cases open) + paid-plan upgrade by alerest285; budget done
+- 2026-10-17T13:09Z · alerest285/claude-code: plan PAID; spot denied on both plans, so on-demand (decision 07). Only blocker left: on-demand P quota (case open). Owner: set a $150 spend limit in AWS Settings.
+- 2026-10-17T13:09Z · alerest285 · blocked: only the on-demand P quota (case open) is left; plan PAID, budget live
