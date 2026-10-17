@@ -95,7 +95,9 @@ Settings: `POD_HOST`, `POD_SSH_PORT`, `LOCAL_PORT` (default 18000; local 8000 is
 ## Disk
 
 Recording is **off** unless you pass `--record`. When on, it streams straight into two mp4 files (about 100 KB per second), with
-no per-frame images. `start.sh` deletes any leftover `images/` folders from the old recorder at every start, prints the free space,
+no per-frame images. `start.sh` only REPORTS leftover per-frame `images/` folders (it never deletes) and prints the free space;
+`console/cleanup.sh` lists them, marks unfinalized ones KEEP (their PNGs may be the only copy) and with `--delete` asks per folder.
+It
 refuses `--record` below 5 GB free, and the console stops recording by itself below 2 GB. To see what uses space:
 `du -sh ~/hackathon-data/* robot/runs ~/.cache/uv ~/.cache/huggingface`. `uv cache prune` drops unused package downloads.
 

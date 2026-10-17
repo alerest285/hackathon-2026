@@ -21,15 +21,11 @@ say() { echo "[start] $*"; }
 [ -d "$ROBOT_DIR/so101_client" ] || die "robot/ client not found at $ROBOT_DIR. Run 'git pull' (it lands with T06)."
 command -v uv >/dev/null || die "uv missing: curl -LsSf https://astral.sh/uv/install.sh | sh"
 
-# Disk hygiene: the old recorder (before 8e303ef) left per-frame PNGs in <dataset>/images; they are temporary
-# files LeRobot never needs again. Remove them on every start and say how much came back.
+# Disk: report only, never delete here. Old recordings may hold their only camera data as per-frame PNGs.
 data="${HACK_DATA:-$HOME/hackathon-data}"
 if [ -d "$data" ]; then
-  freed=$(find "$data" -type d -name images -prune -exec du -sk {} + 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')
-  if [ "${freed:-0}" -gt 0 ]; then
-    find "$data" -type d -name images -prune -exec rm -rf {} + 2>/dev/null || true
-    say "disk: removed ${freed} MB of leftover recording images under $data"
-  fi
+  big=$(find "$data" -type d -name images -prune -exec du -sm {} + 2>/dev/null | sort -rn | head -5)
+  [ -z "$big" ] || { say "disk: per-frame image folders under $data (MB, path). Review, then remove explicitly with console/cleanup.sh:"; echo "$big" | sed 's/^/          /'; }
 fi
 free_mb=$(df -Pm "$HOME" | awk 'NR==2 {print $4}')
 say "disk: ${free_mb} MB free"
