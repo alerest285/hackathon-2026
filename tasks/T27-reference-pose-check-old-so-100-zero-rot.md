@@ -1,8 +1,8 @@
 ---
 id: T27
 title: Reference-pose check: old SO-100 zero/rotated poses -> map signs+offsets
-status: todo
-owner: 
+status: doing
+owner: saadl27
 depends: 
 paths:
   - console/ref_poses.py
