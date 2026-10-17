@@ -11,4 +11,4 @@ echo "Month to date (Cost Explorer, ~\$0.01 per call, lags up to 24 h):"
 end="$(date -u -v+1d +%Y-%m-%d 2>/dev/null || date -u -d tomorrow +%Y-%m-%d)"
 aws ce get-cost-and-usage --time-period "Start=$(date -u +%Y-%m-01),End=$end" \
   --granularity MONTHLY --metrics UnblendedCost --query 'ResultsByTime[0].Total.UnblendedCost.[Amount,Unit]' --output text | sed 's/^/  /'
-echo "Budget: \$$HACK_BUDGET_USD. At ~\$3/h spot that is ~45 GPU-hours."
+echo "On-demand $HACK_TYPE: \$$(ondemand_price)/h. Budget \$$HACK_BUDGET_USD = ~$(awk -v b=$HACK_BUDGET_USD -v p=$(ondemand_price) 'BEGIN{printf "%d", b/p}') GPU-hours total."

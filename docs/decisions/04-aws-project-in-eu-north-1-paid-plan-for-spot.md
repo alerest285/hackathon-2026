@@ -1,6 +1,6 @@
 # 04. AWS project in eu-north-1; spot needs the paid plan
 
-**Date:** 2026-10-17 · **Status:** accepted · **Author:** alerest285 · **Amends:** 02 (region and plan; the instance choice stands)
+**Date:** 2026-10-17 · **Status:** accepted; the spot plan is superseded by 07 (the paid plan also denies spot) · **Author:** alerest285 · **Amends:** 02 (region and plan; the instance choice stands)
 
 ## Context
 

@@ -10,7 +10,7 @@ apt-get update -y && apt-get install -y ffmpeg tmux git
 cat > /usr/local/bin/idle-stop.sh <<'IDLE'
 #!/bin/bash
 # Stops this instance after __IDLE_MIN__ minutes with no SSH connection and an idle GPU.
-# Persistent spot + stop behaviour: a guest power-off = EC2 "stopped", disk kept.
+# A guest power-off = EC2 "stopped" (default shutdown behaviour); compute billing ends, disk kept.
 # Disable with: sudo touch /etc/no-idle-stop
 [ -f /etc/no-idle-stop ] && exit 0
 f=/var/tmp/idle-since; busy=0

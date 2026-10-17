@@ -14,3 +14,4 @@ Append-only, newest at the bottom. One line per event.
 - 2026-10-17T13:06Z alerest285 [T02] (claude-code) budget hackathon-gpu $150/month created, alerts 50/80/100% + forecast to alerest285 mail; quota cases P spot 16 + P on-demand 16 = CASE_OPENED; plan still FREE (upgrade pending, owner)
 - 2026-10-17T13:06Z alerest285 [T02] (claude-code) release (blocked): waiting on AWS quota review (2 cases open) + paid-plan upgrade by alerest285; budget done
 - 2026-10-17T13:06Z alerest285 [T03] (claude-code) release (todo): scripts final + dry-run verified on the live project; first boot waits on T02. See handoff.
+- 2026-10-17T13:09Z alerest285 [T03] (claude-code) plan upgraded to PAID by alerest285 (credits $100 kept); spot still denied: paid-plan SCP has DenySpotMarketType. Ale chose on-demand (decision 07). HACK_MARKET default ondemand; full launch dry run (AMI, 200 GB gp3, 1a, IMDSv2) = DryRunOperation; on-demand P quota still 0, case open

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Start the team GPU. Re-uses a stopped instance (weights stay on its disk); otherwise launches
-# a persistent spot p5.4xlarge in the cheapest zone that offers it. Prints the ssh line.
+# a p5.4xlarge (on-demand by default; HACK_MARKET=spot where allowed). Prints the ssh line.
 set -eu; . "$(dirname "$0")/env.sh"; need_aws
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -18,8 +18,8 @@ else
          --instance-type "$HACK_TYPE" $(market_opts) 2>&1 || true)"
   case "$pre" in
     *DryRunOperation*) ;;
-    *"explicit deny"*) [ "$HACK_MARKET" = spot ] && die "spot is denied for this project. On the free plan it always is:
-  upgrade in AWS Settings > Billing, or run HACK_MARKET=ondemand infra/aws/up.sh (\$$(ondemand_price)/h)."
+    *"explicit deny"*) [ "$HACK_MARKET" = spot ] && die "spot is denied for this project: new-experience projects block spot on both plans (decision 07).
+  Use the default: infra/aws/up.sh (on-demand, \$$(ondemand_price)/h)."
                        die "launch denied by the project's policy: $pre" ;;
     *) die "dry run failed: $pre" ;;
   esac
