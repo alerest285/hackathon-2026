@@ -63,6 +63,11 @@
     <div class="card kv" id="kv"></div>
   </div>
 
+  <div class="card"><div class="bar" style="margin-bottom:6px"><b>Follower calibration</b><span id="calst" class="pill">...</span><span id="calpath" class="mute"></span></div>
+    <table><thead><tr><th>motor</th><th>id</th><th>drive mode</th><th>homing offset</th><th>range min</th><th>range max</th></tr></thead><tbody id="cal"></tbody></table>
+    <div class="mute" style="margin-top:6px">Recalibrate: stop the console (Ctrl-C), run <code id="calcmd">console/calibrate.sh --port ...</code> in the terminal, then start the console again.
+    Afterwards check the joint table above: measured values must fall inside the trained range.</div></div>
+
   <div class="card"><div class="mute" style="margin-bottom:4px">instructions sent</div><div id="hist" class="mute">none yet</div></div>
 </main>
 <script>
@@ -103,6 +108,12 @@ async function tick() {
     for (const [k,v] of Object.entries(st)) if (typeof v !== 'object') kv[k] = v;
     $('kv').innerHTML = Object.entries(kv).map(([k,v]) => `<div class="mute">${k}</div><div>${fmt(v)}</div>`).join('');
     $('hist').innerHTML = (s.history||[]).slice().reverse().map(h => `${h.t} ${h.reset?'run':'next'}: ${h.task}`).join('<br>') || 'none yet';
+    const cal = s.calibration || {};
+    $('calst').textContent = cal.status || '...'; $('calst').className = 'pill ' + (cal.status === 'ok' ? 'dry' : (cal.status === 'MISSING' ? 'live' : ''));
+    $('calpath').textContent = (cal.path || '') + (cal.modified ? ' · ' + cal.modified : '');
+    if (cal.command) $('calcmd').textContent = cal.command;
+    $('cal').innerHTML = cal.motors ? Object.entries(cal.motors).map(([n,m]) => `<tr><td>${n}</td><td>${fmt(m.id)}</td><td>${fmt(m.drive_mode)}</td><td>${fmt(m.homing_offset)}</td><td>${fmt(m.range_min)}</td><td>${fmt(m.range_max)}</td></tr>`).join('')
+      : `<tr><td colspan=6 class="mute">${cal.status === 'MISSING' ? 'No calibration file yet: run the command below.' : (cal.status || '')}</td></tr>`;
     const r = s.recorder;
     $('rec').textContent = !r ? 'recording off (--no-record)' : (s.recording ? 'REC ' : 'not recording ') +
       `episode ${r.episode_frames} frames · ${r.episodes_saved} saved this session · ${r.root}` + (r.error ? ' · ERROR ' + r.error : '') + (r.dropped ? ` · ${r.dropped} dropped` : '');

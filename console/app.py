@@ -122,6 +122,25 @@ class Console:
             with self.lock:
                 self.jpeg[cam] = buf.tobytes()
 
+    def calibration(self) -> dict:
+        """The follower's LeRobot calibration file, as the page shows it."""
+        robot = self.loop.robot
+        path = getattr(robot, "calibration_path", None)
+        if path is None:
+            return {"status": "fake arm (no calibration)"}
+        path = Path(path)
+        cmd = f"console/calibrate.sh --port {self.a.port} --robot-id {self.a.robot_id}"
+        if not path.exists():
+            return {"status": "MISSING", "path": str(path), "command": cmd}
+        try:
+            data = json.loads(path.read_text())
+        except Exception as e:
+            return {"status": f"unreadable: {e}", "path": str(path), "command": cmd}
+        rows = {name: {k: data[name].get(k) for k in ("id", "drive_mode", "homing_offset", "range_min", "range_max")}
+                for name in data}
+        return {"status": "ok", "path": str(path), "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(path.stat().st_mtime)),
+                "motors": rows, "command": cmd}
+
     def start(self):
         if not self.started:
             self.loop.start()  # connects arm, cameras, server; holds until the first instruction
@@ -142,6 +161,7 @@ class Console:
                       frame_age_ms={k: round(float(v), 0) for k, v in (info.frame_age_ms or {}).items()})
         st["last_chunk"] = chunk
         st["recording"] = self.recording
+        st["calibration"] = self.calibration()
         st["recorder"] = self.recorder.status() if self.recorder else None
         # The checkpoint was trained on one arm calibration. Joints far outside its q01..q99 range mean ours differs,
         # and zero-shot cannot work until the calibration (or an offset) matches.

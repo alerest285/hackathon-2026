@@ -82,23 +82,43 @@ uv run --extra encoders python examples/so101/inference.py --weights black-fores
 Rig rules learned the hard way: the scene camera is the fixed overview (left in the tiled image) and the wrist camera is
 on the gripper (right). Never swap them. Both must have the same resolution, and joint states are in degrees, not LeRobot's −100…100 range.
 
-## Drive the real arm (Saad)
+## Drive the real arm (Saad): follower arm only
 
-On the Mac with the SO-101 and both cameras plugged in:
+**For Saad's agent: do these in order on the Mac with the SO-100 follower arm and both cameras plugged in.**
+No leader arm is needed. Stop at any step that fails and report it with `scripts/say.sh @alerest285 "..."`.
 
 ```sh
 git pull
-console/start.sh --port /dev/tty.usbmodemXXXX --scene 0 --wrist 1      # dry run first; add --live to move the arm
+# 0. tools: uv (curl -LsSf https://astral.sh/uv/install.sh | sh) and ssh access to the pod (your GitHub key is installed)
+
+# 1. find the follower's USB port: unplug + replug the arm's USB when asked
+cd robot && uv sync --python 3.13 && uv run --python 3.13 lerobot-find-port && cd ..
+
+# 2. find the cameras: scene = fixed camera looking at the table, wrist = camera on the gripper
+cd robot && uv run --python 3.13 python camera_check.py --scene 0 --wrist 1 && cd ..
+#    open robot/runs/camera-check-*/composed.png: LEFT must be the scene, RIGHT the wrist. Wrong? swap the numbers.
+
+# 3. calibrate the follower (interactive, a human moves the arm): middle pose + ENTER, then every joint through its full range + ENTER
+console/calibrate.sh --port /dev/tty.usbmodemXXXX
+
+# 4. start the console in DRY RUN (the arm is read, never moved). The page opens at http://127.0.0.1:8765
+console/start.sh --port /dev/tty.usbmodemXXXX --scene 0 --wrist 1
 ```
 
-A page opens at **http://127.0.0.1:8765**. Type an instruction (or pick a preset), press **Run**, and watch both cameras
-and the joints. Every run is recorded as a native **LeRobotDataset** episode. Mark it **Save: success / fail** on the page.
-The leader arm (resets, demonstrations) uses LeRobot's own tools through `console/teleop.sh`. The arm is an **SO-100**; LeRobot
-drives it with the same code as the SO-101. Use **Next instruction** for the next Hanoi step, and **Pause** to hold. First time on an arm: follow
-[`console/README.md`](console/README.md) "Before the first live run". Above all, check that your calibration falls inside the
-range the model was trained on. The page marks joints outside it in red.
+5. **On the page, check before anything moves:**
+   - **Follower calibration** card shows `ok`, the file path and all six motors. `MISSING` means: redo step 3.
+   - Camera previews: scene left, wrist right.
+   - Joint table: put the arm in its rest pose. Every **measured** value must sit inside the **trained range** column. Red rows mean
+     the calibration differs from what the model was trained on: do not go live, tell alerest285.
+   - Type `pick up the small disk and place it on the middle peg`, press **Run**. In dry run the **command** column changes and
+     the arm stays still. The turnaround reads about 500–600 ms.
+6. **Live**, with a person at the arm and a hand on the power switch: Ctrl-C, then
+   `console/start.sh --port /dev/tty.usbmodemXXXX --scene 0 --wrist 1 --live`. **Run**, watch, **Pause** to hold,
+   **Save: success / fail** at the end of each attempt. Every attempt is recorded as a LeRobot dataset episode in
+   `~/hackathon-data/so100_hanoi_flux_zeroshot`.
 
-The policy server runs on the pod in tmux `so101-serve` (514 ms per plan, H100). `start.sh` starts it if it is down.
+Recalibrate any time: Ctrl-C the console, `console/calibrate.sh --port ...`, start again. The policy server runs on the pod
+(tmux `so101-serve`, 514 ms per plan), and `start.sh` starts it if it is down. Details and troubleshooting: [`console/README.md`](console/README.md).
 
 ## Sharing the GPU
 

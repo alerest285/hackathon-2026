@@ -49,6 +49,6 @@ say "4/5 robot environment (first run installs LeRobot 0.6.1, a few minutes)"
 (cd "$ROBOT_DIR" && uv sync -q --python 3.13)
 
 say "5/5 console on http://127.0.0.1:8765"
-( sleep 5; command -v open >/dev/null && open "http://127.0.0.1:8765" ) &
+[ -n "${HACK_NO_BROWSER:-}" ] || ( sleep 5; command -v open >/dev/null && open "http://127.0.0.1:8765" ) &
 # lerobot[dataset] adds the LeRobotDataset writer for recording, without changing robot/'s own environment.
 cd "$ROBOT_DIR" && uv run -q --python 3.13 --with "lerobot[dataset]==0.6.1" python "$ROOT/console/app.py" --server "ws://localhost:$LOCAL_PORT" "$@"
