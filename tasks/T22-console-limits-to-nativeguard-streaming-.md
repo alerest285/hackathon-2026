@@ -1,7 +1,7 @@
 ---
 id: T22
 title: Console: limits to NativeGuard, streaming recording opt-in, Linux stat fix
-status: doing
+status: done
 owner: alerest285
 depends: 
 paths:
@@ -24,3 +24,4 @@ TODO: one or two sentences.
 
 ## Notes and handoffs (append, newest last)
 
+- 2026-10-17T22:49Z · alerest285 · done: min-frames fix
