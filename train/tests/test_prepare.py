@@ -77,11 +77,13 @@ def test_prepare_maps_filters_and_merges(tmp_path):
             {"episode_index": 1, "verdict": "success", "run_mode": "dry", "dropped_frames": 0, "encoder_dropped": {}, "valid": False},
             {"episode_index": 2, "verdict": "fail", "run_mode": "live", "dropped_frames": 0, "encoder_dropped": {}, "valid": True}]
     (b / "console_episodes.jsonl").write_text("".join(json.dumps(s) + "\n" for s in side))
+    # eval writes a second sidecar; it must merge, not replace (ep0 keeps run_mode live from the console file)
+    (b / "hanoi_episodes.jsonl").write_text(json.dumps({"episode_index": 0, "verdict": "success", "interventions": 0}) + "\n")
     jm_a, jm_b = write_map(tmp_path / "map_a.json", "arm_a", 1.0), write_map(tmp_path / "map_b.json", "arm_b", 1.5)
 
     out = tmp_path / "lora_v1"
     assert prepare.main(["--source", f"{a}={tmp_path / 'map_a.json'}", "--source", f"{b}={tmp_path / 'map_b.json'}",
-                         "--out", str(out)]) == 0
+                         "--out", str(out), "--hanoi-only"]) == 0
 
     m = json.loads((out / "prepare_manifest.json").read_text())
     assert m["episodes"] == 2 and m["frames"] == 60 + 55

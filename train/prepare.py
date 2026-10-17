@@ -66,7 +66,8 @@ def read_sidecar(root: Path) -> dict[int, dict]:
             for line in f.read_text().splitlines():
                 if line.strip():
                     d = json.loads(line)
-                    out[int(d["episode_index"])] = d  # a later line for the same episode wins
+                    i = int(d["episode_index"])
+                    out[i] = {**out.get(i, {}), **d}  # merge both files; hanoi's verdict (read last) wins
     return out
 
 
@@ -150,6 +151,8 @@ def select_episodes(ds, root: Path, keep: str, min_frames: int, prompts: set[str
             reason = f"{s['run_mode']} run: the arm did not follow the commands, state and action disagree"
         elif s is not None and s.get("dropped_frames", 0):
             reason = f"{s['dropped_frames']} frames dropped while recording (timing gap)"
+        elif s is not None and s.get("interventions"):
+            reason = f"interventions {s['interventions']} (a human corrected the arm)"
         elif s is not None and any((s.get("encoder_dropped") or {}).values()):
             reason = f"encoder dropped frames {s['encoder_dropped']}"
         elif s is not None and keep == "success" and s.get("verdict") != "success":
@@ -228,9 +231,8 @@ def main(argv=None) -> int:
     p.add_argument("--keep", choices=("success", "not-fail", "all"), default="success",
                    help="for runs with a verdict sidecar (console/eval). Teleop demos have none and are all kept")
     p.add_argument("--min-frames", type=int, default=MIN_FRAMES)
-    p.add_argument("--prompts", type=Path, default=REPO / "eval" / "config" / "hanoi.toml",
-                   help="keep only episodes whose task is a prompt from this eval config")
-    p.add_argument("--any-task", action="store_true", help="skip the prompt check (e.g. a non-Hanoi task)")
+    p.add_argument("--hanoi-only", action="store_true",
+                   help="keep only episodes whose task is a prompt eval/config/hanoi.toml can issue")
     p.add_argument("--allow-dry", action="store_true", help="keep dry runs (never for training: the arm did not move)")
     p.add_argument("--no-map", action="store_true",
                    help="the sources are already in model space (never for our raw recordings)")
@@ -244,7 +246,7 @@ def main(argv=None) -> int:
         raise SystemExit(f"{out} exists; pick a new --out (datasets are versioned by name: lora_v1, lora_v2, ...)")
     repo_id = a.repo_id or f"alerest285/{out.name}"
     mm = load_mapping_module()
-    prompts = None if a.any_task else hanoi_prompts(a.prompts)
+    prompts = hanoi_prompts(REPO / "eval" / "config" / "hanoi.toml") if a.hanoi_only else None
     default_map = a.mapping.expanduser() if a.mapping else None
 
     work = Path(tempfile.mkdtemp(prefix="lora-prepare-", dir=out.parent if out.parent.exists() else None))
@@ -299,7 +301,8 @@ def main(argv=None) -> int:
                 "keep": a.keep, "min_frames": a.min_frames, "sources": manifest_sources, "state_coverage": cov}
     (out / "prepare_manifest.json").write_text(json.dumps(manifest, indent=1))
 
-    print(f"\n{out}: {manifest['episodes']} episodes, {manifest['frames']} frames ({manifest['minutes']} min)")
+    print("\nThe task strings below are the captions the adapter learns: type them exactly the same at inference.")
+    print(f"{out}: {manifest['episodes']} episodes, {manifest['frames']} frames ({manifest['minutes']} min)")
     for t, c in sorted(tasks.items()):
         print(f"  {c:4d}  {t}")
     if prompts:
