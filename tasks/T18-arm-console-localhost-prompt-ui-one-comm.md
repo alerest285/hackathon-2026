@@ -1,8 +1,8 @@
 ---
 id: T18
 title: Arm console: localhost prompt UI + one-command start
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - console/**
