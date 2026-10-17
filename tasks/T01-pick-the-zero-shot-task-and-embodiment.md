@@ -1,8 +1,8 @@
 ---
 id: T01
 title: Pick the zero-shot task and embodiment
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - docs/project.md
