@@ -14,16 +14,14 @@ first, meaning the released checkpoints with no fine-tuning. Fine-tuning comes l
 
 | # | Milestone | Done when |
 |---|---|---|
-| 1 | **Inference infra** | A released checkpoint runs on our AWS H100 and returns `(1, 32, 8)` actions for a recorded DROID observation. Latency and VRAM are logged. |
-| 2 | **Served policy** | `flux-action serve-robolab` is up and a client on another machine gets an action chunk over the WebSocket. |
-| 3 | **Zero-shot task** | The chosen task runs closed-loop on the chosen embodiment (real robot or sim) for N episodes, with success counted and videos saved. |
-| 4 | Stretch | LoRA on SO-101, or a second task. Decided after milestone 3. |
+| 1 | **Inference infra** | `flux-3-action-so101` runs on our AWS H100 and returns `(1, 42, 6)` actions for a recorded or synthetic SO-101 observation. Latency and VRAM are logged. (The DROID smoke test, T04, is an optional environment check.) |
+| 2 | **Served policy** | Our SO-101 server on the GPU host returns action chunks to the Mac that drives the arm, with the round trip logged and split into network and server time. |
+| 3 | **Zero-shot task** | The 3-disk Tower of Hanoi (decision 05) runs closed-loop on the SO-101 for 10 strict episodes, with steps completed counted and videos saved. |
+| 4 | Stretch | LoRA on SO-101 with Hanoi demonstrations, compared with milestone 3 under the same protocol. |
 
 ## Open questions (resolve as decision records)
 
-1. **Which embodiment and task for milestone 3?** This is task T01. The released policies cover two:
-   - **DROID**: a Franka arm with 3 cameras. Also the setup used for **RoboLab**, a simulated benchmark, so it needs no physical robot. Isaac Sim needs an RTX-class GPU, which an H200 is not. Unverified; check the RoboLab docs.
-   - **SO-101**: the cheap LeRobot arm, about 200 teleop pick-and-place episodes. It needs the physical arm and two cameras: scene and wrist.
+1. ~~Which embodiment and task for milestone 3?~~ Settled: the physical SO-101 and a 3-disk Tower of Hanoi, one move per instruction. Prompts, success rule and N = 10 are in decision 05.
 2. **VRAM and latency.** Not published. We measure them on our H100 in T04 (`report.json` records GPU memory).
 
 ## Constraints
