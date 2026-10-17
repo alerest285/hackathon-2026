@@ -1,8 +1,8 @@
 ---
 id: T19
 title: Console: follower calibration view + calibrate.sh + Saad agent README
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - console/**
