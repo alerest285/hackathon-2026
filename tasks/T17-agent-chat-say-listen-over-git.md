@@ -1,8 +1,8 @@
 ---
 id: T17
 title: Agent chat: say/listen over git
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - scripts/say.sh
