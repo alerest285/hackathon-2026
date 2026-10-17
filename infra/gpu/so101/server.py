@@ -27,7 +27,7 @@ import numpy as np
 
 import protocol
 from engines import NAMES, make_engine
-from engines.base import synthetic_window
+from engines.base import load_norm_stats, synthetic_window
 
 DEFAULT_CHECKPOINT = "black-forest-labs/flux-3-action-so101"
 DEFAULT_REVISION = "c9e13b2aca6a0a472b3ea03fd90cff32d3e85849"
@@ -444,6 +444,13 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="override the checkpoint's guidance (3 3); 1 1 skips the unconditional pass, about half the compute",
     )
     p.add_argument("--steps", type=int, help="override the checkpoint's sampling steps (4)")
+    p.add_argument(
+        "--norm-stats",
+        metavar="JSON",
+        help="state/action q01/q99 (hello keys state_q01 ... or {state: {q01, q99}, action: {...}}) that replace the "
+        "checkpoint's normalization, e.g. new-calibration stats for an arm in native LeRobot degrees. With --adapter "
+        "it only checks that they equal the adapter's own and refuses otherwise",
+    )
     p.add_argument("--device", default="cuda")
     p.add_argument(
         "--compile",
@@ -472,7 +479,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     return args
 
 
-def engine_kwargs(args: argparse.Namespace) -> dict:
+def engine_kwargs(args: argparse.Namespace, norm_stats: dict | None = None) -> dict:
     sampling = {"guidance": tuple(args.guidance) if args.guidance else None, "steps": args.steps}
     if args.engine == "fake":
         kw = {"mode": args.fake_mode, "latency_ms": args.fake_latency_ms, "jitter_ms": args.fake_jitter_ms, **sampling}
@@ -487,6 +494,7 @@ def engine_kwargs(args: argparse.Namespace) -> dict:
         "device": args.device,
         "compile": args.compile,
         "offload_text_encoder": not args.text_encoder_on_gpu,
+        "norm_stats": norm_stats,
         **sampling,
     }
     if args.engine == "lerobot":
@@ -507,9 +515,23 @@ def main(argv=None) -> int:
     else:
         rev = f"@{args.revision[:8]}" if args.revision else ""
         say(f"so101 server: engine {args.engine}, {args.checkpoint}{rev}, device {args.device}")
+    norm_stats, norm_info = None, None
+    if args.norm_stats:
+        try:
+            norm_stats, digest = load_norm_stats(args.norm_stats)
+        except (OSError, ValueError) as e:
+            say(f"ERROR: --norm-stats: {e}")
+            if args.selftest:
+                print("FAIL", flush=True)
+            return 2
+        norm_info = {"path": args.norm_stats, "sha256": digest, "streams": sorted(norm_stats),
+                     "mode": "ignored (fake engine)" if args.engine == "fake"
+                     else ("checked against the adapter" if args.adapter else "override")}
+        say(f"norm stats: {args.norm_stats} sha256 {digest[:12]} ({', '.join(sorted(norm_stats))}), {norm_info['mode']}")
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="so101-infer")
     try:
-        engine = make_engine(args.engine, **engine_kwargs(args))
+        engine = make_engine(args.engine, **engine_kwargs(args, norm_stats))
+        engine.meta["norm_stats"] = norm_info  # None: the checkpoint's own normalization
         for task in tasks:  # on the worker thread, where every later plan runs
             executor.submit(engine.warmup, task).result()
     except Exception as e:

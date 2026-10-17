@@ -51,6 +51,15 @@ Sampling: `--guidance VIDEO ACTION` and `--steps N` override the checkpoint's 3/
 Guidance 1/1 runs one pass per step instead of two (about half the compute), and decision 06 keeps it as the
 fallback if 3/3 misses the 533 ms budget; hello and the selftest line report the values in force.
 
+Normalization: `--norm-stats stats.json` replaces the checkpoint's state and action q01/q99 for zero-shot experiments,
+such as the new-calibration SO-101 stats of `multimodalart/flux-3-action-so101-sim@09edebb`, used with an arm in native
+LeRobot degrees and no joint map. It does what a checkpoint copy with swapped normalizer files does, without the copy.
+The file takes the hello's keys (`state_q01`, `state_q99`, `action_q01`, `action_q99`) or flux-action's nested form
+(`{"state": {"q01", "q99"}, "action": {...}}`). Either stream may be left out, and each needs 6 finite values with
+q99 > q01. Both engines apply it identically (bit-equal plans on the CPU fixture). With `--adapter` it only checks: an
+adapter carries the normalization it was trained with in its processors, so other stats refuse to start. The hello
+reports `norm_stats` (path, sha256, streams, mode) next to the effective `state_q01` ... `action_q99`.
+
 ## Engines
 
 | Engine | Path | `--compile` |

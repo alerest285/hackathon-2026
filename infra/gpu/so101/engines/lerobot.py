@@ -46,6 +46,7 @@ class LeRobotEngine(Engine):
         force_base_revision: bool = False,
         guidance: tuple[float, float] | None = None,
         steps: int | None = None,
+        norm_stats: dict | None = None,
     ):
         super().__init__()
         import lerobot
@@ -116,6 +117,8 @@ class LeRobotEngine(Engine):
         cfg = inner.config
         for note in override_sampling(cfg, guidance, steps):
             print(f"lerobot: {note}", flush=True)
+        if norm_stats:
+            self._apply_norm_stats(norm_stats, check_only=bool(adapter))
         self.camera_keys = list(cfg.camera_order)
         self.cameras = [key.removeprefix("observation.images.") for key in self.camera_keys]
         self.snapshots = snapshot_indices(cfg.n_obs_steps, cfg.history_snapshots)
@@ -183,6 +186,31 @@ class LeRobotEngine(Engine):
             f"{self.meta['dtype']}, {'compile_model (the first plan compiles)' if compile else 'eager'}",
             flush=True,
         )
+
+    def _apply_norm_stats(self, stats: dict, check_only: bool) -> None:
+        """Override the quantiles of every history normalizer step (pre and post), or, with an adapter, only check
+        that they already equal `stats`: an adapter must run with the normalization it was trained with."""
+        torch = self.torch
+        steps = [s for s in (*self.pre.steps, *self.post.steps)
+                 if getattr(s, "streams", None) and hasattr(s, "load_state_dict")]
+        if not steps:
+            raise RuntimeError("--norm-stats: no history normalizer step in this checkpoint's processors")
+        for step in steps:
+            current = step.state_dict()
+            new = dict(current)
+            for key, value in current.items():
+                stream, q = key.split(".", 1)
+                if stream in stats:
+                    new[key] = torch.tensor(stats[stream][q], dtype=value.dtype)
+            if check_only:
+                bad = [k for k in new if not torch.allclose(new[k].float(), current[k].float(), atol=1e-4)]
+                if bad:
+                    raise RuntimeError(f"--norm-stats differ from the adapter's own normalization ({', '.join(bad)} in "
+                                       f"{type(step).__name__}); serve the adapter with the base it was trained on")
+            else:
+                step.load_state_dict(new)
+        print(f"lerobot: normalization {'checked against' if check_only else 'overridden by'} --norm-stats "
+              f"({', '.join(stats)}) in {len(steps)} processor steps", flush=True)
 
     def infer(self, state, cmd_hist, frames, task):
         torch = self.torch

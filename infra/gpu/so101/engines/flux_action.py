@@ -22,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .base import Engine, override_sampling, pin_revision, window_order
+from .base import Engine, override_normalization, override_sampling, pin_revision, window_order
 
 
 def _git_commit(path: Path) -> str | None:
@@ -53,6 +53,7 @@ class FluxActionEngine(Engine):
         force_base_revision: bool = False,
         guidance: tuple[float, float] | None = None,
         steps: int | None = None,
+        norm_stats: dict | None = None,
     ):
         super().__init__()
         import flux_action
@@ -85,7 +86,7 @@ class FluxActionEngine(Engine):
         policy.to(self.device)
         self.policy = policy
         cfg = policy.config
-        for note in override_sampling(cfg, guidance, steps):
+        for note in override_sampling(cfg, guidance, steps) + override_normalization(cfg, norm_stats):
             print(f"flux-action: {note}", flush=True)
         cfg.validate_inference()
         self.compiled = bool(compile)

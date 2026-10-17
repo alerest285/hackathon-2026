@@ -1,8 +1,11 @@
 """Engine interface and helpers shared by the engines. No torch here."""
 
+import hashlib
+import json
 import math
 import os
 import time
+from pathlib import Path
 
 import numpy as np
 
@@ -111,6 +114,54 @@ def override_sampling(cfg, guidance=None, steps: int | None = None) -> list[str]
         cfg.num_inference_steps = int(steps)
         if before_steps != int(steps):
             notes.append(f"WARNING: {int(steps)} sampling steps instead of the checkpoint's {before_steps}")
+    return notes
+
+
+NORM_STREAMS = ("state", "action")
+
+
+def load_norm_stats(path) -> tuple[dict, str]:
+    """({stream: {"q01": [6], "q99": [6]}}, sha256 of the file) from a JSON stats file, for --norm-stats.
+
+    Accepts the hello's flat keys (state_q01, state_q99, action_q01, action_q99) or flux-action's nested form
+    ({"state": {"q01", "q99"}, "action": {...}}). A stream may be left out (it keeps the checkpoint's); each
+    present one needs 6 finite values with q99 > q01, since normalization divides by q99 - q01.
+    """
+    raw = Path(path).expanduser().read_bytes()
+    data = json.loads(raw)
+    if not isinstance(data, dict):
+        raise ValueError(f"{path}: expected a JSON object")
+    stats = {}
+    for stream in NORM_STREAMS:
+        nested = data.get(stream)
+        if isinstance(nested, dict) and {"q01", "q99"} <= set(nested):
+            q01, q99 = nested["q01"], nested["q99"]
+        elif f"{stream}_q01" in data or f"{stream}_q99" in data:
+            q01, q99 = data.get(f"{stream}_q01"), data.get(f"{stream}_q99")
+        else:
+            continue
+        lo, hi = np.asarray(q01, dtype=np.float64), np.asarray(q99, dtype=np.float64)
+        if lo.shape != (6,) or hi.shape != (6,) or not (np.isfinite(lo).all() and np.isfinite(hi).all()):
+            raise ValueError(f"{path}: {stream} q01/q99 must be 6 finite numbers each")
+        if not (hi > lo).all():
+            raise ValueError(f"{path}: {stream} needs q99 > q01 on every channel")
+        stats[stream] = {"q01": lo.tolist(), "q99": hi.tolist()}
+    if not stats:
+        raise ValueError(f"{path}: no state or action quantiles (state_q01/state_q99/action_q01/action_q99)")
+    return stats, hashlib.sha256(raw).hexdigest()
+
+
+def override_normalization(cfg, stats: dict | None) -> list[str]:
+    """flux-action: set cfg.state_normalization / cfg.action_normalization ({"q01", "q99"}), which the policy
+    reads at every plan. Returns a WARNING line per stream that differs from the checkpoint's."""
+    notes = []
+    for stream, q in (stats or {}).items():
+        attr = f"{stream}_normalization"
+        before = getattr(cfg, attr)
+        setattr(cfg, attr, {"q01": list(q["q01"]), "q99": list(q["q99"])})
+        if before is None or not (np.allclose(before["q01"], q["q01"]) and np.allclose(before["q99"], q["q99"])):
+            notes.append(f"WARNING: {stream} normalization from --norm-stats, not the checkpoint's "
+                         f"(q01 {np.round(q['q01'], 2).tolist()}, q99 {np.round(q['q99'], 2).tolist()})")
     return notes
 
 

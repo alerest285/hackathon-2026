@@ -27,7 +27,14 @@ sys.path.insert(0, str(HERE))
 import protocol  # noqa: E402
 import server  # noqa: E402
 from engines import make_engine  # noqa: E402
-from engines.base import override_sampling, pin_revision, synthetic_frames, window_order  # noqa: E402
+from engines.base import (  # noqa: E402
+    load_norm_stats,
+    override_normalization,
+    override_sampling,
+    pin_revision,
+    synthetic_frames,
+    window_order,
+)
 from engines.fake import PERIOD_S, FakeEngine, pickplace_pose  # noqa: E402
 from websockets.sync.client import connect  # noqa: E402
 
@@ -422,3 +429,59 @@ def test_pin_revision_leaves_local_snapshot_paths_alone():
     for spec in ("/workspace/hf/hub/models--black-forest-labs--flux-3-action-base/snapshots/62878e29:vae",
                  "~/hf/snapshots/62878e29/text_encoder", "./weights:vae"):
         assert pin_revision(spec, rev) == (spec, "")
+
+
+NEW_CAL = {  # new-calibration-like stats: LeRobot degrees around 0, gripper 0..100
+    "state_q01": [-90.0, -100.0, -95.0, -90.0, -150.0, 0.5],
+    "state_q99": [90.0, 100.0, 95.0, 90.0, 150.0, 60.0],
+    "action_q01": [-3.0, -3.0, -3.0, -3.0, -5.0, 0.5],
+    "action_q99": [3.0, 3.0, 3.0, 3.0, 5.0, 60.0],
+}
+
+
+def test_norm_stats_load_flat_or_nested_and_refuse_bad_files(tmp_path):
+    flat = tmp_path / "flat.json"
+    flat.write_text(json.dumps(NEW_CAL))
+    stats, digest = load_norm_stats(flat)
+    assert sorted(stats) == ["action", "state"] and stats["state"]["q99"][1] == 100.0 and len(digest) == 64
+    nested = tmp_path / "nested.json"
+    nested.write_text(json.dumps({"state": {"q01": NEW_CAL["state_q01"], "q99": NEW_CAL["state_q99"]}}))
+    only_state, _ = load_norm_stats(nested)
+    assert list(only_state) == ["state"]  # the action stream keeps the checkpoint's
+    for bad, why in (({"state_q01": [0] * 5, "state_q99": [1] * 5}, "6 finite"),
+                     ({"state_q01": [0] * 6, "state_q99": [0] * 6}, "q99 > q01"),
+                     ({"other": 1}, "no state or action")):
+        path = tmp_path / "bad.json"
+        path.write_text(json.dumps(bad))
+        with pytest.raises(ValueError, match=why):
+            load_norm_stats(path)
+
+
+def test_override_normalization_sets_the_flux_action_config_and_warns_on_a_change():
+    cfg = SimpleNamespace(state_normalization={"q01": [0.0] * 6, "q99": [1.0] * 6}, action_normalization=None)
+    stats = {"state": {"q01": NEW_CAL["state_q01"], "q99": NEW_CAL["state_q99"]}}
+    notes = override_normalization(cfg, stats)
+    assert cfg.state_normalization["q99"][1] == 100.0 and cfg.action_normalization is None
+    assert len(notes) == 1 and notes[0].startswith("WARNING: state normalization")
+    assert override_normalization(cfg, stats) == []  # the same values again: no warning
+
+
+def test_norm_stats_flag_reaches_the_gpu_engines_and_the_hello(tmp_path):
+    path = tmp_path / "newcal.json"
+    path.write_text(json.dumps(NEW_CAL))
+    stats, _ = load_norm_stats(path)
+    kw = server.engine_kwargs(server.parse_args(["--norm-stats", str(path)]), stats)
+    assert kw["norm_stats"] == stats  # flux-action, and lerobot alike
+    out = subprocess.run(
+        [sys.executable, str(HERE / "server.py"), "--engine", "fake", "--selftest", "--n", "2", "--norm-stats", str(path)],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "norm stats:" in out.stdout and "ignored (fake engine)" in out.stdout
+    bad = tmp_path / "bad.json"
+    bad.write_text("{}")
+    out = subprocess.run(
+        [sys.executable, str(HERE / "server.py"), "--engine", "fake", "--selftest", "--norm-stats", str(bad)],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 2 and "ERROR: --norm-stats" in out.stdout and out.stdout.strip().endswith("FAIL")
