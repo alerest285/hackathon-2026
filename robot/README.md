@@ -39,10 +39,11 @@ Decision 06 sets this order. Each step must pass before the next:
 | 2 | `../infra/aws/ssh.sh -N &` then `uv run --python 3.13 python ping.py --n 20 --infer 20` | `PASS`, with the round trip split into server and network time |
 | 3 | `uv run --python 3.13 python run.py --task "..." --fake-robot --scene 0 --wrist 1` | `PASS` against the live server, with real frames and a fake arm |
 | 4 | `uv run --python 3.13 python run.py --task "..." --port /dev/tty.usbmodemXXXX --robot-id so101_hanoi` | `PASS` in a dry run on the arm: the state is read, the commands are only logged |
-| 5 | the same with `--live` | one supervised episode, with someone at the arm |
+| 5 | the same with `--live --limits limits.json` | one supervised episode, with someone at the arm |
 
 `readout.py` helps before step 5. It prints the six joint values at 10 Hz. With `--torque-off` the arm can be
-moved by hand, and `--save-limits limits.json --margin 3` writes joint limits for `run.py --limits`. The
+moved by hand, and `--save-limits limits.json --margin 3` writes joint limits for `run.py --limits`, which
+`--live` requires. The
 gripper column gives the open and closed values for eval's step-end thresholds (also the fully closed value
 on air, eval's `empty_threshold`); which end is closed depends on the calibration.
 
@@ -65,7 +66,7 @@ frame age, upload, queue, compute and download.
 
 Each run writes `runs/<stamp>/` (gitignored):
 
-- `ticks.jsonl`: one line per tick with `k, t, state, cmd, held, lateness_ms, frame_age_ms, remaining, task, chunk_id`.
+- `ticks.jsonl`: one line per tick with `k, t, state, cmd, held, written, lateness_ms, frame_age_ms, remaining, task, chunk_id`.
 - `plans.jsonl`: one line per reply, with `id, tick, d, accepted, start, reason (ok|late|stale), turnaround_ms, server_ms, rtt_ms, actions`.
 - `summary.json`: the arguments, the server hello, `ControlLoop.stats()` and the checks.
 
@@ -84,6 +85,18 @@ Each run writes `runs/<stamp>/` (gitignored):
   unchanged.
 - A failed state read does not stop the chunk: the command does not need a fresh state. Three failures in a
   row hold the arm (`bus_holds`), and 30 stop the loop.
+- The history only holds commands that went out. A failed write leaves the last sent command in force and
+  the next tick anchors on it; three failed writes in a row stop the loop for good (`ControlLoop.error`).
+- `SO101.write` checks a native guard (`so101_client/safety.py`) in LeRobot degrees, below any joint map:
+  a goal more than 25° from the measured joint, a jump of more than 15° between writes, or a goal outside
+  `--limits` (plus 2°) raises `SafetyStop`. Nothing is written and the loop stops at once. The gripper is
+  left out, since a grasp holds a steady error. The thresholds are `NativeGuard(max_error_deg,
+  max_step_deg, limits)`.
+- A dry run writes nothing, so its history keeps the held command and the measured state, as on the real
+  arm. The logged `cmd` is what it would have sent: each accepted chunk, planned from the held pose. It
+  cannot run away the way re-integrating unsent commands did (codex audit, `docs/research/
+  so101-calibration-audit-2026-10-17.md`: +654° in 13 s), but it is a preview of one plan, not the live
+  trajectory.
 - For `--live`, someone stands at the arm with a hand on the power switch.
 - `readout.py --torque-off` releases the motors, and the arm falls unless someone holds it. Torque stays
   off when it exits.
@@ -106,7 +119,8 @@ Each run writes `runs/<stamp>/` (gitignored):
 | `so101_client/chunks.py` | pure: `to_deltas`, `integrate`, `clamp`, `Stitcher` (join at d, 6-tick crossfade, drop if the start index > 35), `Scheduler` (prefetch P = 16 or remaining ≤ d_max + 8; sync 32-then-replan), `Planner` (the two together, per tick, and the tick the current hold began) |
 | `so101_client/net.py` | `NetClient`: websockets on its own thread and event loop, TCP_NODELAY, reconnect with backoff; requests in flight fail with an error on disconnect |
 | `so101_client/cameras.py` | `Cameras`: one thread per camera (AVFoundation on macOS), 640×480 kept for taps, 256×256 JPEG q95 / PNG / raw encoded on the camera thread |
-| `so101_client/robot_io.py` | `SO101` over LeRobot 0.6.1 `so101_follower`: `sync_read` Present_Position, `sync_write` Goal_Position |
+| `so101_client/robot_io.py` | `SO101` over LeRobot 0.6.1 `so101_follower`: `sync_read` Present_Position, `sync_write` Goal_Position after the native guard |
+| `so101_client/safety.py` | `NativeGuard` (max error vs the measured joint, max step between writes, limits) and `SafetyStop` |
 | `so101_client/fakes.py` | `FakeRobot` (first-order lag, τ = 0.1 s), `FakeCameras` (moving pattern), `FakeNet` (hold, sine, pickplace) |
 | `so101_client/loop.py` | `ControlLoop`, `LoopConfig`, `TickInfo`: the 30 Hz loop from docs/architecture.md "Client loop" |
 

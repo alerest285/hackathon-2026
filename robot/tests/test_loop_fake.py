@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 
 from so101_client.fakes import FakeCameras, FakeNet, FakeRobot
-from so101_client.loop import BUS_HOLD_AFTER, ControlLoop, LoopConfig
+from so101_client.loop import BUS_HOLD_AFTER, WRITE_STOP_AFTER, ControlLoop, LoopConfig
+from so101_client.safety import SafetyStop
 
 TASK_A = "pick up the small red disk and place it on the right peg"
 TASK_B = "pick up the medium blue disk and place it on the middle peg"
@@ -203,3 +204,102 @@ def test_a_failed_state_read_keeps_the_chunk_going_and_is_not_starvation():
 def test_joint_limits_need_lo_below_hi():
     with pytest.raises(ValueError, match="lo < hi"):
         ControlLoop(FakeRobot(), FakeCameras(), FakeNet(), LoopConfig(joint_limits=((10.0, -10.0),) * 5))
+
+
+class FlakyWriteRobot(FakeRobot):
+    """FakeRobot whose next `fail` writes raise (a serial write error); `stop` raises SafetyStop instead."""
+
+    fail = 0
+    stop = False
+
+    def write(self, cmd):
+        if self.stop:
+            raise SafetyStop("native guard: shoulder_lift goal is 30.0 deg from the measured arm")
+        if self.fail > 0:
+            self.fail -= 1
+            raise OSError("write failed: port closed")
+        super().write(cmd)
+
+
+def test_a_failed_write_keeps_the_last_sent_command_and_repeated_failures_stop_the_loop():
+    robot = FlakyWriteRobot()
+    loop = ControlLoop(robot, FakeCameras(width=160, height=120), FakeNet("sine", latency_ms=100.0, jitter_ms=0.0),
+                       LoopConfig(dry_run=False, caffeinate=False))
+    rec = Recorder()
+    loop.add_observer(rec)
+    loop.start()
+    try:
+        loop.set_task(TASK_A, reset_history=True)
+        assert wait_for(lambda: len(accepted(rec.snapshot())) >= 2, 4.0)
+        robot.fail = 1
+        assert wait_for(lambda: loop.stats()["write_errors"] == 1, 1.0)
+        time.sleep(0.2)
+        assert loop.running and loop.error is None  # one failure does not stop the loop
+        robot.fail = WRITE_STOP_AFTER
+        assert wait_for(lambda: not loop.running, 2.0)
+    finally:
+        loop.stop()
+    assert loop.error and f"failed {WRITE_STOP_AFTER} ticks in a row" in loop.error
+    ticks = rec.snapshot()
+    j = next(i for i, info in enumerate(ticks) if info.task and not info.written)
+    assert ticks[j - 1].written and not ticks[j].held
+    assert np.array_equal(ticks[j].cmd, ticks[j - 1].cmd)  # the command in force is the last one that went out
+    assert ticks[j + 1].written
+    assert np.abs(ticks[j + 1].cmd[:5] - ticks[j].cmd[:5]).max() <= LoopConfig().step_max_deg + 1e-4
+    after = [info for info in ticks[j + 2:] if not info.written]
+    assert len(after) == WRITE_STOP_AFTER - 1  # the last failure raised before its TickInfo
+
+
+def test_a_safety_stop_stops_the_loop_at_once_and_writes_nothing_more():
+    robot = FlakyWriteRobot()
+    loop = ControlLoop(robot, FakeCameras(width=160, height=120), FakeNet("sine", latency_ms=100.0, jitter_ms=0.0),
+                       LoopConfig(dry_run=False, caffeinate=False))
+    loop.start()
+    try:
+        loop.set_task(TASK_A, reset_history=True)
+        assert wait_for(lambda: loop.stats()["plans"] >= 1, 4.0)
+        writes = robot.writes
+        robot.stop = True
+        assert wait_for(lambda: not loop.running, 1.0)
+    finally:
+        loop.stop()
+    assert loop.error.startswith("SafetyStop: native guard")
+    assert robot.writes == writes
+    assert loop.stats()["write_errors"] == 1
+
+
+class RampNet(FakeNet):
+    """Every chunk climbs 2 degrees per tick on shoulder_lift from its anchor, and records the anchors."""
+
+    def __init__(self, **kw):
+        super().__init__("hold", **kw)
+        self.anchors = []
+
+    def plan(self, anchor, tick):
+        self.anchors.append(np.array(anchor, dtype=np.float32))
+        out = np.repeat(np.asarray(anchor, dtype=np.float32)[None, :], self.chunk, axis=0)
+        out[:, 1] += 2.0 * np.arange(1, self.chunk + 1)
+        return out
+
+
+def test_dry_run_history_holds_and_the_candidate_cannot_drift():
+    """Codex's audit case: re-integrating unsent commands ran the lift to +654 deg in 13 s. Now the history keeps
+    the held pose and the candidate restarts on each chunk, so it stays within one chunk of the arm."""
+    robot = FakeRobot(noise=0.0)
+    net = RampNet(latency_ms=100.0, jitter_ms=0.0)
+    loop = ControlLoop(robot, FakeCameras(width=160, height=120), net, LoopConfig(dry_run=True, caffeinate=False))
+    rec = Recorder()
+    loop.add_observer(rec)
+    loop.start()
+    try:
+        loop.set_task(TASK_A, reset_history=True)
+        assert wait_for(lambda: len(accepted(rec.snapshot())) >= 8, 8.0)  # far past one chunk of ticks
+    finally:
+        loop.stop()
+    assert loop.error is None and robot.writes == 0
+    ticks = [i for i in rec.snapshot() if i.task == TASK_A]
+    held_pose = ticks[0].state
+    assert all(np.allclose(a, held_pose, atol=1e-4) for a in net.anchors)  # every window anchors on the held pose
+    lift = np.array([i.cmd[1] for i in ticks]) - held_pose[1]
+    assert lift.max() <= 2.0 * 42 + 1e-3  # within one chunk; the old chain passed this after 42 ticks
+    assert len(ticks) > 60 and not any(i.written for i in ticks)

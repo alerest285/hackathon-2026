@@ -50,11 +50,14 @@ def parse_args(argv=None):
     p.add_argument("--period", type=int, default=16, help="P: ticks between prefetch requests")
     p.add_argument("--crossfade", type=int, default=6, help="K: seam crossfade in ticks")
     p.add_argument("--step-max", type=float, default=6.0, help="per-tick joint clamp, degrees")
-    p.add_argument("--limits", type=Path, help="JSON {joint: [lo, hi]} for the 5 joints (readout.py --save-limits)")
+    p.add_argument("--limits", type=Path,
+                   help="JSON {joint: [lo, hi]} for the 5 joints (readout.py --save-limits); required with --live")
     p.add_argument("--log-dir", type=Path, help="default: robot/runs/<stamp>/")
     a = p.parse_args(argv)
     if not a.fake_robot and not (a.port and a.robot_id):
         p.error("--port and --robot-id are required unless --fake-robot")
+    if a.live and not a.fake_robot and a.limits is None:
+        p.error("--live needs --limits: measure them first with readout.py --save-limits (codex audit, 2026-10-17)")
     return a
 
 
@@ -77,8 +80,10 @@ def build(a):
         robot = FakeRobot()
     else:
         from so101_client.robot_io import SO101
+        from so101_client.safety import NativeGuard
 
-        robot = SO101(a.port, a.robot_id)
+        # native-unit tripwires below any joint map (safety.py); the limits also bound the guard
+        robot = SO101(a.port, a.robot_id, guard=NativeGuard(limits=load_limits(getattr(a, "limits", None))))
     camera_args = dict(image_size=a.image_size, image_format=a.image_format, jpeg_quality=a.jpeg_quality)
     if a.fake_cameras:
         from so101_client.fakes import FakeCameras
@@ -103,7 +108,8 @@ def tick_record(info) -> dict:
     chunk = info.chunk
     return {
         "k": info.k, "t": round(info.t, 6), "state": [round(float(v), 4) for v in info.state],
-        "cmd": [round(float(v), 4) for v in info.cmd], "held": info.held, "lateness_ms": round(info.lateness_ms, 3),
+        "cmd": [round(float(v), 4) for v in info.cmd], "held": info.held, "written": info.written,
+        "lateness_ms": round(info.lateness_ms, 3),
         "frame_age_ms": {cam: round(v, 2) for cam, v in info.frame_age_ms.items()}, "remaining": info.remaining,
         "task": info.task, "chunk_id": chunk["id"] if chunk else None,
         "chunk_accepted": chunk["accepted"] if chunk else None,

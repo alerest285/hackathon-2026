@@ -9,6 +9,11 @@ connect there. The register is writable with torque off, and configure() leaves 
 disables torque on disconnect by default (SOFollowerConfig.disable_torque_on_disconnect,
 motors_bus.disconnect): this client turns that off, so the arm keeps holding its last goal unless
 disconnect(torque_off=True) is asked for.
+
+Every write passes a NativeGuard (safety.py) in these native degrees, against the last measured state and
+the last written goal: a goal too far from the arm, a jump, or a goal outside the measured limits raises
+SafetyStop and is not written. This replaces SOFollower.send_action's max_relative_target guard, which
+writing through the bus skips, and it holds below any joint map the caller wraps around this class.
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ from pathlib import Path
 import numpy as np
 
 from . import STATE_NAMES
+from .safety import NativeGuard
 
 log = logging.getLogger(__name__)
 
@@ -27,11 +33,15 @@ log = logging.getLogger(__name__)
 class SO101:
     state_names = STATE_NAMES
 
-    def __init__(self, port: str, robot_id: str, use_degrees: bool = True, *, num_read_retries: int = 2):
+    def __init__(self, port: str, robot_id: str, use_degrees: bool = True, *, num_read_retries: int = 2,
+                 guard: NativeGuard | None = None):
         self.port = port
         self.robot_id = robot_id
         self.use_degrees = use_degrees
         self.num_read_retries = num_read_retries
+        self.guard = guard if guard is not None else NativeGuard()
+        self.last_state: np.ndarray | None = None  # native, from the newest successful read_state()
+        self.last_goal: np.ndarray | None = None  # native, the newest goal that went out
         self._robot = None
 
     def _lerobot(self):
@@ -93,17 +103,23 @@ class SO101:
         bus = self._robot.bus
         present = bus.sync_read("Present_Position", num_retry=self.num_read_retries)
         bus.sync_write("Goal_Position", present)
+        self.last_state = self.last_goal = np.array([present[name] for name in STATE_NAMES], dtype=np.float64)
 
     def read_state(self) -> np.ndarray:
         """(6,) float32: degrees x5 + gripper %, in state_names order."""
         values = self._robot.bus.sync_read("Present_Position", num_retry=self.num_read_retries)
-        return np.array([values[name] for name in STATE_NAMES], dtype=np.float32)
+        state = np.array([values[name] for name in STATE_NAMES], dtype=np.float32)
+        self.last_state = state.astype(np.float64)
+        return state
 
     def write(self, cmd: np.ndarray) -> None:
+        """Send one goal. Raises SafetyStop (nothing written) when it breaks the native guard."""
         cmd = np.asarray(cmd, dtype=np.float64).reshape(len(STATE_NAMES))
         if not np.isfinite(cmd).all():
             raise ValueError(f"refusing a non-finite command {cmd}")
+        self.guard.check(cmd, self.last_state, self.last_goal)
         self._robot.bus.sync_write("Goal_Position", {name: float(v) for name, v in zip(STATE_NAMES, cmd)})
+        self.last_goal = cmd
 
     def set_torque(self, enabled: bool) -> None:
         """Torque off lets the arm be moved by hand (it falls if nobody holds it). Torque on first pins the

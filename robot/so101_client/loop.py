@@ -13,6 +13,15 @@ Each tick k, at an absolute deadline (sleep until spin_margin before it, then sp
 
 A failed state read does not stop the chunk (the command does not need a fresh state, and the ring gets the
 last good one); only BUS_HOLD_AFTER failures in a row hold the arm, counted as bus_holds, not starved.
+
+The history only ever holds commands that went out. A failed write leaves the last sent command in force:
+the next tick anchors on it (one delta is skipped, an undershoot), and WRITE_STOP_AFTER failures in a row
+stop the loop. A SafetyStop from the robot's native guard (safety.py) stops it at once. Both are latched:
+the loop does not restart, and the motors keep the last goal that went out. A dry run sends nothing, so
+its history keeps the held command and the measured state; the command it would have sent is a separate,
+hypothetical chain that follows each accepted chunk from the held pose (it cannot drift the way
+re-integrating unsent commands did, audit 2026-10-17). TickInfo.cmd reports that hypothetical command and
+TickInfo.written is False.
 Camera capture, encoding and socket I/O run on their own threads; this thread never waits for them, and it
 takes the statistics lock only after the tick's command is written.
 """
@@ -34,12 +43,14 @@ import numpy as np
 from . import CAMERAS, CHUNK, EXEC, N_OBS, STATE_NAMES
 from .chunks import MODES, Planner, clamp
 from .history import Ring
+from .safety import SafetyStop
 
 log = logging.getLogger(__name__)
 
 TICK_HISTORY = 216_000  # lateness samples kept for stats(): 2 h at 30 Hz
 PLAN_HISTORY = 20_000
 BUS_HOLD_AFTER = 3  # failed state reads in a row before the arm holds (the loop stops at 30)
+WRITE_STOP_AFTER = 3  # failed command writes in a row before the loop stops
 COUNTERS = ("ticks", "overruns", "holds", "starved", "bus_holds", "requests", "plans", "dropped", "stale", "errors",
             "timeouts", "unmatched", "clamped", "bus_errors", "write_errors", "observer_errors", "stale_frames")
 
@@ -68,13 +79,14 @@ class TickInfo:
     k: int
     t: float
     state: np.ndarray  # (6,) measured
-    cmd: np.ndarray  # (6,) sent, or the one a dry run would have sent
+    cmd: np.ndarray  # (6,) the command in force: sent this tick, kept after a failed write, or a dry run's candidate
     held: bool
     lateness_ms: float
     frame_age_ms: dict
     remaining: int
     task: str | None
     chunk: dict | None = None  # on the tick a reply is handled: id, tick, d, accepted, turnaround_ms, server_ms, actions
+    written: bool = False  # cmd reached the motors this tick (False in a dry run and after a failed write)
 
 
 class ControlLoop:
@@ -108,11 +120,13 @@ class ControlLoop:
         self._task: str | None = None
         self._epoch = 0
         self._requests: dict[int, dict] = {}
-        self._last_cmd: np.ndarray | None = None
+        self._last_cmd: np.ndarray | None = None  # the newest command that went out (or the held pose)
+        self._dry_cmd: np.ndarray | None = None  # dry run only: the command it would have sent
         self._last_state: np.ndarray | None = None
         self._first_chunk = False
         self._backoff_until = 0
         self._bus_failures = 0
+        self._write_failures = 0
         self._stats_lock = threading.Lock()
         self._lateness: deque[float] = deque(maxlen=TICK_HISTORY)
         self._turnaround: deque[float] = deque(maxlen=PLAN_HISTORY)
@@ -290,6 +304,8 @@ class ControlLoop:
         self._last_state = state
         if self._last_cmd is None:
             self._last_cmd = state.copy()
+        if self._dry_cmd is None:
+            self._dry_cmd = self._last_cmd.copy()
         frames = self.cameras.latest()
         frames_ok = all(cam in frames for cam in self.cams)
         frame_age = {cam: (t - frame.t) * 1000.0 for cam, frame in frames.items()}
@@ -310,12 +326,14 @@ class ControlLoop:
                 chunk_info = info
         self._expire_requests(k, t)
 
-        # 3. command: a failed read keeps the chunk going; BUS_HOLD_AFTER of them in a row hold the arm
+        # 3. command: a failed read keeps the chunk going; BUS_HOLD_AFTER of them in a row hold the arm.
+        # A dry run plans on its own hypothetical chain; the history keeps `last`, the held command.
+        base = self._dry_cmd if cfg.dry_run else last
         bus_hold = self._bus_failures >= BUS_HOLD_AFTER
-        nxt = self._planner.step(last, k) if self._task is not None and not bus_hold else None
+        nxt = self._planner.step(base, k) if self._task is not None and not bus_hold else None
         held = nxt is None
         if held:
-            cmd = last
+            cmd = base
             if self._task is not None:
                 self._counts["holds"] += 1
                 if bus_hold:
@@ -323,17 +341,30 @@ class ControlLoop:
                 elif self._first_chunk and cfg.mode == "prefetch":
                     self._counts["starved"] += 1
         else:
-            cmd = clamp(nxt, last, cfg.joint_limits, cfg.step_max_deg).astype(np.float32)
+            cmd = clamp(nxt, base, cfg.joint_limits, cfg.step_max_deg).astype(np.float32)
             if np.abs(cmd - nxt).max() > 1e-4:
                 self._counts["clamped"] += 1
-        if not cfg.dry_run:
+        written = False
+        if cfg.dry_run:
+            self._dry_cmd = cmd
+        else:
             try:
                 self.robot.write(cmd)
+            except SafetyStop:
+                self._counts["write_errors"] += 1
+                raise  # latched: the motors keep the last goal that went out
             except Exception as e:
                 self._counts["write_errors"] += 1
-                if self._counts["write_errors"] in (1, 30):
-                    log.warning("command write failed: %s", e)
-        self._last_cmd = cmd
+                self._write_failures += 1
+                if self._write_failures >= WRITE_STOP_AFTER:
+                    raise RuntimeError(f"command write failed {self._write_failures} ticks in a row: {e}") from e
+                log.warning("command write failed (%d in a row), the last sent command stays in force: %s",
+                            self._write_failures, e)
+                cmd = last
+            else:
+                written = True
+                self._write_failures = 0
+                self._last_cmd = cmd
 
         # 4. request
         if (self._task is not None and bus_ok and frames_ok and self._ring.ready and k >= self._backoff_until
@@ -345,7 +376,7 @@ class ControlLoop:
 
         # 5. statistics and observers
         info = TickInfo(k=k, t=t, state=state, cmd=cmd, held=held, lateness_ms=lateness_ms, frame_age_ms=frame_age,
-                        remaining=self._planner.remaining, task=self._task, chunk=chunk_info)
+                        remaining=self._planner.remaining, task=self._task, chunk=chunk_info, written=written)
         with self._stats_lock:
             self._lateness.append(lateness_ms)
             self._counts["ticks"] += 1
@@ -388,6 +419,7 @@ class ControlLoop:
             if needs_reset:
                 self._ring.reset(state, frames)
                 self._last_cmd = state.copy()
+                self._dry_cmd = state.copy()
                 reset_now = True
                 self._warn_outside_limits(state)
         return reset_now
@@ -442,6 +474,9 @@ class ControlLoop:
                 reason = "ok"
                 self._counts["plans"] += 1
                 self._first_chunk = True
+                if self.cfg.dry_run:  # the hypothetical chain restarts on this chunk, planned from the held pose
+                    acts = np.asarray(reply.actions, dtype=np.float32)
+                    self._dry_cmd = (acts[start - 1] if start > 0 else req["anchor"]).astype(np.float32).copy()
         return {"id": reply.id, "tick": req["tick"], "d": d, "accepted": start is not None, "start": start,
                 "reason": reason, "turnaround_ms": turnaround_ms, "server_ms": server_ms, "rtt_ms": rtt_ms,
                 "actions": reply.actions}
