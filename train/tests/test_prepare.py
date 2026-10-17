@@ -82,22 +82,26 @@ def test_prepare_maps_filters_and_merges(tmp_path):
     jm_a, jm_b = write_map(tmp_path / "map_a.json", "arm_a", 1.0), write_map(tmp_path / "map_b.json", "arm_b", 1.5)
 
     out = tmp_path / "lora_v1"
-    assert prepare.main(["--source", f"{a}={tmp_path / 'map_a.json'}", "--source", f"{b}={tmp_path / 'map_b.json'}",
+    assert prepare.main(["--teleop", f"{a}={tmp_path / 'map_a.json'}", "--source", f"{b}={tmp_path / 'map_b.json'}",
                          "--out", str(out), "--hanoi-only"]) == 0
 
     m = json.loads((out / "prepare_manifest.json").read_text())
     assert m["episodes"] == 2 and m["frames"] == 60 + 55
     assert m["tasks"] == {GOOD: 1, GOOD2: 1}
-    da, db = m["sources"][0]["dropped"], m["sources"][1]["dropped"]
+    by = {Path(x["root"]).name: x for x in m["sources"]}
+    da, db = by["demos_a"]["dropped"], by["runs_b"]["dropped"]
     assert "frames <" in da["1"] and "not a Hanoi prompt" in da["2"]
-    assert "invalid" in db["1"] and "verdict fail" in db["2"]
-    assert m["sources"][1]["mapping"]["robot_id"] == "arm_b"
+    assert "only live runs" in db["1"] and "verdict fail" in db["2"]
+    assert by["runs_b"]["mapping"]["robot_id"] == "arm_b" and by["demos_a"]["kind"] == "teleop"
+    for src in by.values():  # the exact map files travel with the dataset, named by their hash
+        assert prepare.sha256(out / src["mapping"]["copy"]) == src["mapping"]["sha256"]
 
     ds = LeRobotDataset("alerest285/lora_v1", root=out)
     st = np.stack([ds.hf_dataset[i]["observation.state"].numpy() for i in range(len(ds.hf_dataset))])
     act = np.stack([ds.hf_dataset[i]["action"].numpy() for i in range(len(ds.hf_dataset))])
-    np.testing.assert_allclose(st[:60], jm_a.to_model(raw_a[0][0]), atol=1e-3)
-    np.testing.assert_allclose(act[60:], jm_b.to_model(raw_b[0][1]), atol=1e-3)
+    # merge order: run sources first, then teleop
+    np.testing.assert_allclose(act[:55], jm_b.to_model(raw_b[0][1]), atol=1e-3)
+    np.testing.assert_allclose(st[55:], jm_a.to_model(raw_a[0][0]), atol=1e-3)
     s = ds.meta.stats["observation.state"]
     np.testing.assert_allclose(s["max"], st.max(0), atol=1e-3)
     np.testing.assert_allclose(s["min"], st.min(0), atol=1e-3)
@@ -115,11 +119,11 @@ def test_short_video_is_dropped(tmp_path):
     p = next((a / "meta" / "episodes").glob("*/*.parquet"))
     df = pd.read_parquet(p)
     col = "videos/observation.images.wrist/to_timestamp"
-    df.loc[df["episode_index"] == 1, col] = df.loc[df["episode_index"] == 1, col] - 0.5
+    df.loc[df["episode_index"] == 1, col] = df.loc[df["episode_index"] == 1, col] - 1 / 30  # one frame short
     df.to_parquet(p, index=False)
     write_map(tmp_path / "map.json", "arm", 1.0)
     out = tmp_path / "lora"
-    assert prepare.main(["--source", str(a), "--mapping", str(tmp_path / "map.json"), "--out", str(out)]) == 0
+    assert prepare.main(["--teleop", str(a), "--mapping", str(tmp_path / "map.json"), "--out", str(out)]) == 0
     m = json.loads((out / "prepare_manifest.json").read_text())
     assert m["episodes"] == 1 and "wrist video spans" in m["sources"][0]["dropped"]["1"]
 
@@ -128,3 +132,29 @@ def test_refuses_existing_out(tmp_path):
     (tmp_path / "x").mkdir()
     with pytest.raises(SystemExit):
         prepare.main(["--source", str(tmp_path), "--mapping", "m.json", "--out", str(tmp_path / "x")])
+
+
+def test_runs_fail_closed(tmp_path):
+    """Codex review 15:38Z: legacy rows and episodes missing from the sidecar must not be admitted as teleop."""
+    b = tmp_path / "runs"
+    make_dataset(b, [(GOOD, 55)] * 5, seed=3)
+    rows = [{"episode_index": 0, "verdict": "success", "run_mode": "live", "valid": True, "dropped_frames": 0},
+            {"episode_index": 1, "verdict": "success"},  # legacy row
+            {"episode_index": 3, "verdict": "success", "run_mode": "unknown", "valid": True},
+            {"episode_index": 4, "verdict": "success", "run_mode": "live", "valid": None}]  # episode 2 has no row
+    (b / "console_episodes.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    write_map(tmp_path / "map.json", "arm", 1.0)
+    out = tmp_path / "lora"
+    assert prepare.main(["--source", str(b), "--mapping", str(tmp_path / "map.json"), "--out", str(out)]) == 0
+    m = json.loads((out / "prepare_manifest.json").read_text())
+    d = m["sources"][0]["dropped"]
+    assert m["episodes"] == 1 and "run_mode/valid" in d["1"] and "no sidecar row" in d["2"]
+    assert "only live runs" in d["3"] and "only live runs" in d["4"]
+
+
+def test_source_without_sidecar_must_be_declared_teleop(tmp_path):
+    a = tmp_path / "demos"
+    make_dataset(a, [(GOOD, 55)], seed=4)
+    write_map(tmp_path / "map.json", "arm", 1.0)
+    with pytest.raises(SystemExit, match="--teleop"):
+        prepare.main(["--source", str(a), "--mapping", str(tmp_path / "map.json"), "--out", str(tmp_path / "o")])

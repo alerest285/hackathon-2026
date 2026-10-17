@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # LoRA on flux-3-action-so101 with LeRobot (BFL docs/so101-lora.md recipe, train/lora.json). Run ON the GPU host
-# after train/setup.sh, with the dataset from train/prepare.py rsynced to /workspace/datasets/<name>.
+# after train/setup.sh, with train/ and infra/gpu/so101/ synced to the host and the dataset from train/prepare.py
+# rsynced to /workspace/datasets/<name>.
 #
-#   bash train/train.sh probe <name> [--batch 2|4|8]      40 microsteps: s/step, data wait, peak VRAM, full-run ETA
-#   bash train/train.sh run   <name> [--batch B] [--updates 2500] [--effective 8] [--tag v1]   full run in tmux
+#   bash train/train.sh probe  <name> [--batch 2|4|8]   PERFORMANCE ONLY, saves nothing: s/step, data wait, VRAM, ETA
+#   bash train/train.sh smoke  <name> [--batch B]       save -> resume -> load raw + EMA adapters in the server; required
+#                                                        once per setup before a full run
+#   bash train/train.sh run    <name> [--batch B] [--updates 2500] [--effective 8] [--tag v1]   full run in tmux
+#   bash train/train.sh resume <run>                    restage the dataset from /workspace (manifest hash checked)
+#                                                        and continue <run> from its last checkpoint, in tmux
 #
 # The optimizer always sees an effective batch of --effective (default 8, BFL's single-GPU preset): accumulation is
 # effective / batch, and steps, save and eval scale with it, so --batch only changes speed, not the recipe.
-# Checkpoints every 125 optimizer updates, raw and EMA. Picks: docs in train/README.md.
+# Checkpoints every 125 optimizer updates, raw and EMA. Every run has a sibling <run>.provenance/, written before
+# training starts and never moved: the dataset's prepare_manifest.json, the joint maps it was converted with, and
+# run.json (dataset, manifest sha256, stage path). Resume and serving read it there.
 # Refuses to start while another process uses the GPU (live serving needs its latency) unless --share.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,8 +24,9 @@ while [ $# -gt 0 ]; do case "$1" in
   --batch) batch="$2"; shift 2 ;; --updates) updates="$2"; shift 2 ;; --effective) effective="$2"; shift 2 ;;
   --tag) tag="$2"; shift 2 ;; --share) share=1; shift ;;
   *) echo "unknown option $1" >&2; exit 2 ;; esac; done
-case "$mode" in probe|run) ;; *) sed -n 2,12p "$0"; exit 2 ;; esac
-[ -n "$name" ] || { sed -n 2,12p "$0"; exit 2; }
+usage() { sed -n 2,19p "$0"; exit 2; }
+case "$mode" in probe|smoke|run|resume) ;; *) usage ;; esac
+[ -n "$name" ] || usage
 [ $((effective % batch)) -eq 0 ] || { echo "--effective $effective is not a multiple of --batch $batch" >&2; exit 2; }
 accum=$((effective / batch))
 
@@ -26,73 +34,129 @@ export LEROBOT_DIR="${LEROBOT_DIR:-/workspace/lerobot-flux3}" HF_HOME="${HF_HOME
 [ -f /workspace/train-env.sh ] || { echo "run train/setup.sh first" >&2; exit 1; }
 . /workspace/train-env.sh
 PY="$LEROBOT_DIR/.venv/bin/python"
-src="/workspace/datasets/$name"
-[ -f "$src/meta/info.json" ] || { echo "no dataset at $src (rsync train/prepare.py's --out there)" >&2; exit 1; }
-[ -f "$src/prepare_manifest.json" ] || { echo "$src has no prepare_manifest.json: only train on train/prepare.py output (model space)" >&2; exit 1; }
+ENV_PREFIX="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TOKENIZERS_PARALLELISM=false"
+mkdir -p /workspace/train-logs
 
-others=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader | grep -v "^$" || true)
-if [ -n "$others" ] && [ "$share" = 0 ]; then
-  echo "GPU busy (pid, MiB):"; echo "$others"
-  echo "Training next to a live server breaks its latency budget. Stop it, use a training pod, or pass --share." >&2
-  exit 1
-fi
-
+gpu_free_or_exit() {
+  local others; others=$(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader | grep -v "^$" || true)
+  if [ -n "$others" ] && [ "$share" = 0 ]; then
+    echo "GPU busy (pid, MiB):"; echo "$others"
+    echo "Training next to a live server breaks its latency budget. Stop it, use a training pod, or pass --share." >&2
+    exit 1
+  fi
+}
+sha() { sha256sum "$1" | cut -d' ' -f1; }
 # Stage on RAM: every sample decodes 50 frames per camera, and /workspace is a network volume.
-need_mb=$(( $(du -sm "$src" | cut -f1) + 512 ))
-free_mb=$(df -m /dev/shm | awk 'NR==2{print $4}')
-stage=/dev/shm/datasets; [ "$free_mb" -gt "$need_mb" ] || stage=/root/datasets
-mkdir -p "$stage"; rsync -a --delete "$src/" "$stage/$name/"
-echo "dataset staged at $stage/$name ($(du -sh "$stage/$name" | cut -f1)); $(python3 -c "import json;m=json.load(open('$src/prepare_manifest.json'));print(m['episodes'],'episodes,',m['minutes'],'min')")"
+stage_dataset() {  # <dataset name> [<fixed stage dir>] -> prints the staged path
+  local src="/workspace/datasets/$1" stage="${2:-}"
+  if [ -z "$stage" ]; then
+    local need_mb free_mb; need_mb=$(( $(du -sm "$src" | cut -f1) + 512 )); free_mb=$(df -m /dev/shm | awk 'NR==2{print $4}')
+    stage=/dev/shm/datasets/$1; [ "$free_mb" -gt "$need_mb" ] || stage=/root/datasets/$1
+  fi
+  mkdir -p "$stage"; rsync -a --delete "$src/" "$stage/" >&2
+  echo "$stage"
+}
+loader_workers() {
+  local cpus quota; cpus=$(python3 -c 'import os;print(len(os.sched_getaffinity(0)))')
+  quota=$(awk '{ if ($1=="max") print 0; else print int($1/$2) }' /sys/fs/cgroup/cpu.max 2>/dev/null || echo 0)
+  [ "$quota" -gt 0 ] && [ "$quota" -lt "$cpus" ] && cpus=$quota
+  echo $(( cpus > 18 ? 16 : (cpus > 4 ? cpus - 2 : 2) ))
+}
+in_tmux() {  # <session> <cmd file> <log>: EXIT carries the trainer's own status, not tee's
+  tmux new-session -d -s "$1" "bash $2 2>&1 | tee $3; echo EXIT \${PIPESTATUS[0]} >> $3"
+  echo "tmux attach -t $1   (detach: Ctrl-b d).  Follow: tail -f $3 | grep -E 'step|loss|Error|EXIT'"
+}
 
-cpus=$(python3 -c 'import os;print(len(os.sched_getaffinity(0)))')
-quota=$(awk '{ if ($1=="max") print 0; else print int($1/$2) }' /sys/fs/cgroup/cpu.max 2>/dev/null || echo 0)
-[ "$quota" -gt 0 ] && [ "$quota" -lt "$cpus" ] && cpus=$quota
-workers=$(( cpus > 18 ? 16 : (cpus > 4 ? cpus - 2 : 2) ))
-
-stamp=$(date -u +%m%d-%H%M)
-run="${name}${tag:+-$tag}-b${batch}x${accum}-${stamp}"
-out="/workspace/outputs/lora/$run"; [ "$mode" = probe ] && out="/workspace/outputs/lora-probe/$run"
-mkdir -p "$(dirname "$out")" /workspace/train-logs
-log="/workspace/train-logs/$run.log"
-
-if [ "$mode" = probe ]; then
-  steps=$((40 / accum * accum)); save=$((steps * 10)); evals=$save; logf=$accum
-else
-  steps=$((updates * accum)); save=$((125 * accum)); evals=$save; logf=$((5 * accum))
-fi
-args=(-m lerobot.scripts.lerobot_train --config_path="$ROOT/train/lora.json"
-  --dataset.repo_id="alerest285/$name" --dataset.root="$stage/$name"
-  --policy.path="$POLICY_DIR" --policy.device=cuda
-  --policy.video_vae_id="$ENCODERS_DIR/video_vae.safetensors" --policy.text_encoder_id="$ENCODERS_DIR/text_encoder"
-  --batch_size="$batch" --accelerator.gradient_accumulation.steps="$accum"
-  --steps="$steps" --save_freq="$save" --eval_steps="$evals" --log_freq="$logf"
-  --num_workers="$workers" --output_dir="$out")
-[ "$mode" = probe ] && args+=(--save_checkpoint=false)
-
-cat > "/workspace/train-logs/$run.cmd" <<EOF
-# $(date -u +%FT%TZ) $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo no-git) mode=$mode batch=$batch accum=$accum effective=$effective workers=$workers
-cd "$LEROBOT_DIR" && PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TOKENIZERS_PARALLELISM=false $PY ${args[*]}
-EOF
-echo "run $run: batch $batch x accum $accum = $effective, $steps microsteps ($((steps / accum)) updates), $workers loader workers"
-echo "log $log"
-
-if [ "$mode" = run ]; then
-  tmux new-session -d -s "lora-$run" "bash /workspace/train-logs/$run.cmd 2>&1 | tee $log; echo EXIT \$? >> $log"
-  echo "tmux attach -t lora-$run   (detach: Ctrl-b d).  Follow: tail -f $log | grep -E 'step|loss|Error'"
-  echo "Checkpoints: $out/checkpoints/<step>/pretrained_model{,_ema}.  Stop the pod when it ends (bill)."
+# ---------------------------------------------------------------- resume
+if [ "$mode" = resume ]; then
+  gpu_free_or_exit
+  out="/workspace/outputs/lora/$name"; prov="$out.provenance"
+  cfg="$out/checkpoints/last/pretrained_model/train_config.json"
+  [ -f "$cfg" ] && [ -f "$prov/run.json" ] || { echo "no resumable run at $out (needs checkpoints/last and $prov/run.json)" >&2; exit 1; }
+  read -r dname want stage < <(python3 -c "import json;r=json.load(open('$prov/run.json'));print(r['dataset'],r['manifest_sha256'],r['stage'])")
+  have=$(sha "/workspace/datasets/$dname/prepare_manifest.json" 2>/dev/null || echo missing)
+  [ "$have" = "$want" ] || { echo "dataset /workspace/datasets/$dname changed since $name started (manifest $have, run trained on $want): not resuming" >&2; exit 1; }
+  for m in "$prov"/maps/*.json; do
+    [ -e "$m" ] || continue   # no maps: a --no-map dataset
+    [ "$(sha "$m")" = "$(basename "$m" .json)" ] || { echo "provenance map $m does not match its hash" >&2; exit 1; }
+  done
+  staged=$(stage_dataset "$dname" "$stage")
+  echo "restaged $dname at $staged (manifest $want verified)"
+  log="/workspace/train-logs/$name.resume-$(date -u +%m%d-%H%M).log"
+  cmd="${log%.log}.cmd"
+  echo "cd \"$LEROBOT_DIR\" && $ENV_PREFIX $PY -m lerobot.scripts.lerobot_train --config_path=$cfg --resume=true" > "$cmd"
+  in_tmux "lora-$name" "$cmd" "$log"
   exit 0
 fi
 
-# probe: run in the foreground, sample GPU memory, then summarize
+# ---------------------------------------------------------------- probe | smoke | run
+src="/workspace/datasets/$name"
+[ -f "$src/meta/info.json" ] || { echo "no dataset at $src (rsync train/prepare.py's --out there)" >&2; exit 1; }
+[ -f "$src/prepare_manifest.json" ] || { echo "$src has no prepare_manifest.json: only train on train/prepare.py output (model space)" >&2; exit 1; }
+gpu_free_or_exit
+staged=$(stage_dataset "$name")
+echo "dataset staged at $staged ($(du -sh "$staged" | cut -f1)); $(python3 -c "import json;m=json.load(open('$src/prepare_manifest.json'));print(m['episodes'],'episodes,',m['minutes'],'min')")"
+workers=$(loader_workers)
+
+stamp=$(date -u +%m%d-%H%M%S)-$(od -An -N2 -tx2 /dev/urandom | tr -d ' ')
+run="${name}${tag:+-$tag}-b${batch}x${accum}-${stamp}"
+case "$mode" in
+  probe) out="/workspace/outputs/lora-probe/$run"; steps=$((40 / accum * accum)); save=$((steps * 10)); logf=$accum ;;
+  smoke) out="/workspace/outputs/lora-smoke/$run"; steps=$((4 * accum)); save=$((2 * accum)); logf=$accum ;;
+  run)   out="/workspace/outputs/lora/$run"; steps=$((updates * accum)); save=$((125 * accum)); logf=$((5 * accum)) ;;
+esac
+prov="$out.provenance"
+[ -e "$out" ] || [ -e "$prov" ] && { echo "run id collision: $out or $prov exists; nothing touched" >&2; exit 1; }
+mkdir -p "$(dirname "$out")"
+log="/workspace/train-logs/$run.log"; cmd="/workspace/train-logs/$run.cmd"
+
+args=(-m lerobot.scripts.lerobot_train --config_path="$ROOT/train/lora.json"
+  --dataset.repo_id="alerest285/$name" --dataset.root="$staged"
+  --policy.path="$POLICY_DIR" --policy.device=cuda
+  --policy.video_vae_id="$ENCODERS_DIR/video_vae.safetensors" --policy.text_encoder_id="$ENCODERS_DIR/text_encoder"
+  --batch_size="$batch" --accelerator.gradient_accumulation.steps="$accum"
+  --steps="$steps" --save_freq="$save" --eval_steps="$save" --log_freq="$logf"
+  --num_workers="$workers" --output_dir="$out")
+[ "$mode" = probe ] && args+=(--save_checkpoint=false)
+cat > "$cmd" <<EOF
+# $(date -u +%FT%TZ) $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo no-git) mode=$mode batch=$batch accum=$accum effective=$effective workers=$workers
+cd "$LEROBOT_DIR" && $ENV_PREFIX $PY ${args[*]}
+EOF
+echo "run $run ($mode): batch $batch x accum $accum = $effective, $steps microsteps ($((steps / accum)) updates), $workers loader workers"
+echo "log $log"
+
+write_provenance() {  # the exact data contract this adapter is tied to, before any training step
+  mkdir -p "$prov/maps"
+  cp "$src/prepare_manifest.json" "$prov/"
+  cp "$src"/maps/*.json "$prov/maps/" 2>/dev/null || true
+  python3 - "$prov/run.json" "$name" "$(sha "$src/prepare_manifest.json")" "$staged" "$mode" "$batch" "$accum" <<'PY'
+import json, sys, time
+p, name, msha, stage, mode, b, a = sys.argv[1:]
+json.dump({"dataset": name, "manifest_sha256": msha, "stage": stage, "mode": mode, "batch": int(b), "accum": int(a),
+           "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, open(p, "w"), indent=1)
+PY
+}
+
+[ "$mode" = probe ] || write_provenance
+if [ "$mode" = run ]; then
+  in_tmux "lora-$run" "$cmd" "$log"
+  echo "Checkpoints: $out/checkpoints/<step>/pretrained_model{,_ema}.  Stop the training pod when it ends (bill)."
+  exit 0
+fi
+
 ( while sleep 2; do nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits; done ) > "$log.mem" &
 mem_pid=$!
 t0=$(date +%s)
-set +e; bash "/workspace/train-logs/$run.cmd" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}; set -e
+set +e; bash "$cmd" 2>&1 | tee "$log"; rc=${PIPESTATUS[0]}; set -e
 kill $mem_pid 2>/dev/null || true
 peak=$(sort -n "$log.mem" | tail -1)
-echo; echo "=== probe $run: exit $rc, wall $(( $(date +%s) - t0 )) s, peak GPU memory ${peak:-?} MiB of 81559"
-grep -E "updt_s|data_s" "$log" | tail -3
-"$PY" - "$log" "$updates" "$accum" <<'PY'
+echo; echo "=== $mode $run: exit $rc, wall $(( $(date +%s) - t0 )) s, peak GPU memory ${peak:-?} MiB of 81559"
+[ "$rc" = 0 ] || { echo "$mode FAILED (trainer exit $rc): see $log" >&2; exit "$rc"; }
+
+if [ "$mode" = probe ]; then
+  echo "(performance only: nothing was saved; run smoke once before a full run)"
+  grep -E "updt_s|data_s" "$log" | tail -3
+  "$PY" - "$log" "$updates" "$accum" <<'PY'
 import re, sys
 log, updates, accum = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
 rows = [(float(u), float(d)) for u, d in re.findall(r"updt_s:([\d.]+).*?data_s:([\d.]+)", open(log).read())]
@@ -100,9 +164,28 @@ if len(rows) < 2:
     sys.exit("no step timings parsed: read the log above")
 u = sorted(r[0] for r in rows[1:])[len(rows[1:]) // 2]   # median, first log line includes warm-up
 d = sorted(r[1] for r in rows[1:])[len(rows[1:]) // 2]
-per_step = u + d
-hours = per_step * updates * accum / 3600
+hours = (u + d) * updates * accum / 3600
 print(f"median update {u:.2f} s + data wait {d:.2f} s per microstep -> {updates} updates = {hours:.1f} h, about ${hours * 3.99:.0f} at $3.99/h")
 if d > 0.2 * u:
     print("data loading is a bottleneck: more workers, or a smaller dataset video (see README)")
 PY
+  exit 0
+fi
+
+# smoke: resume past the first save, then load raw and EMA adapters exactly as the server will
+cfg="$out/checkpoints/last/pretrained_model/train_config.json"
+[ -f "$cfg" ] || { echo "smoke FAILED: no checkpoint at $out/checkpoints/last" >&2; exit 1; }
+echo "=== smoke: resume to $((6 * accum)) microsteps"
+set +e; (cd "$LEROBOT_DIR" && env PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TOKENIZERS_PARALLELISM=false \
+  "$PY" -m lerobot.scripts.lerobot_train --config_path="$cfg" --resume=true --steps=$((6 * accum))) 2>&1 | tee -a "$log"
+rc=${PIPESTATUS[0]}; set -e
+[ "$rc" = 0 ] || { echo "smoke FAILED: resume exit $rc" >&2; exit "$rc"; }
+last=$(readlink -f "$out/checkpoints/last")
+for variant in pretrained_model pretrained_model_ema; do
+  [ -d "$last/$variant" ] || { echo "smoke FAILED: $last/$variant missing" >&2; exit 1; }
+  echo "=== smoke: server selftest with --adapter $last/$variant"
+  set +e; "$PY" "$ROOT/infra/gpu/so101/server.py" --engine lerobot --adapter "$last/$variant" --selftest --n 3 2>&1 | tee -a "$log"
+  rc=${PIPESTATUS[0]}; set -e
+  [ "$rc" = 0 ] || { echo "smoke FAILED: server could not run $variant (exit $rc)" >&2; exit "$rc"; }
+done
+echo "=== smoke PASS: save, resume, raw + EMA adapters served. Full run: bash train/train.sh run $name --batch $batch"

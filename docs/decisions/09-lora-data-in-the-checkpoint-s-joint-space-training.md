@@ -24,12 +24,16 @@ following BFL's `docs/so101-lora.md`. Two facts from the source shape it:
   stats, merges sources (model space is shared across arms) and writes `prepare_manifest.json` with each map's sha256,
   `robot_id` and calibration hash. `train/train.sh` refuses a dataset without that manifest.
 - **An adapter is served behind the same map it was trained with.** A refit map means prepare and train again.
-- **Admission:** live runs only (`run_mode` live, `valid` true), verdict success, no interventions, no writer or
-  encoder drops, ≥ 50 frames, and both mp4s cover every row (checked on the files, not only the counters).
-  Teleop demos have no sidecar and are admitted after the length and video checks.
+- **Admission fails closed:** runs (`--source`) need a sidecar row with `run_mode` exactly `live` and `valid` exactly
+  true, verdict success, no interventions, no writer or encoder drops. Every episode needs ≥ 50 frames and both mp4s
+  covering every row exactly (checked on the files). Leader-arm demos have no sidecar and must be declared `--teleop`.
+- **Provenance:** each dataset carries its map files (named by sha256); each run gets a sibling `<run>.provenance/`
+  before the first step. `train.sh resume` restages only a dataset whose manifest hash matches.
+- **Gate before a full run:** `train.sh smoke` (save → resume → raw and EMA adapters loaded by the server) must pass
+  once per setup. `probe` measures speed only.
 - **Recipe:** `train/lora.json` = BFL's preset (rank/alpha 32, LR 1e-4 / heads ×5, EMA 0.999, BF16, checkpointing,
-  effective batch 8, 2,500 updates) with `eval_split` 0.1 instead of 0.2 (small sets), 12–16 loader workers,
-  wandb off. `--batch` changes only speed: accumulation, steps, save and eval scale to keep the effective batch.
+  effective batch 8, 2,500 updates) with `eval_split` 0.1 instead of 0.2 (small sets), `max_eval_samples` 64 (else
+  every eval runs the whole held-out split), uint8 frames and prefetch 2 (loader RAM), 12–16 workers, wandb off. `--batch` changes only speed: accumulation, steps, save and eval scale to keep the effective batch.
 - **Training never runs on a GPU that serves a live arm.** `train.sh` refuses while another process holds the GPU,
   unless `--share`. Train on a second pod, or on the serving pod while no one drives the arm. Datasets are staged on
   `/dev/shm`, because `/workspace` on Runpod is a network volume.

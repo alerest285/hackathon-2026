@@ -13,10 +13,11 @@ Then merge all sources into --out and write <out>/prepare_manifest.json (what we
 
 Run on the machine that holds the recordings, with the LeRobot that wrote them:
   uv run --python 3.13 --with "lerobot[dataset]==0.6.1" python train/prepare.py \
-      --source ~/hackathon-data/so100_hanoi_demos \
-      --source ~/hackathon-data/so100_hanoi_flux_zeroshot \
+      --teleop ~/hackathon-data/so100_hanoi_demos \
+      --source ~/hackathon-data/so100_hanoi_eval \
       --mapping ~/hackathon-data/joint_mapping.json --out ~/hackathon-data/lora_v1
-A source can carry its own map: --source DIR=MAP.json (a demo set from another arm).
+Leader-arm demos are --teleop (no sidecar); console/eval runs are --source and need complete sidecar rows.
+Either can carry its own map: DIR=MAP.json (a set from another arm).
 """
 from __future__ import annotations
 
@@ -99,7 +100,7 @@ def video_shortfalls(meta, root: Path) -> dict[int, str]:
     The streaming encoder can fall behind and write fewer frames than the parquet holds (seen 17.10: 12 rows,
     scene 6, wrist 12, dropped_frames 0). Two checks per camera: the episode's own span (to - from) * fps must
     equal its length, and the shared v3 mp4 must really hold frames up to the largest to_timestamp in it
-    (demuxed packet count, no decode)."""
+    (demuxed packet count, no decode). Both checks are exact: one missing frame rejects the episode."""
     import av
 
     eps = meta.episodes
@@ -110,7 +111,7 @@ def video_shortfalls(meta, root: Path) -> dict[int, str]:
             e = eps[i]
             n = int(e["length"])
             span = round((float(e[f"videos/{cam}/to_timestamp"]) - float(e[f"videos/{cam}/from_timestamp"])) * meta.fps)
-            if abs(span - n) > 1:
+            if span != n:
                 bad.setdefault(i, f"{cam.split('.')[-1]} video spans {span} frames, episode has {n} rows")
                 continue
             path = root / meta.get_video_file_path(i, cam)
@@ -124,14 +125,22 @@ def video_shortfalls(meta, root: Path) -> dict[int, str]:
             need = round(float(e[f"videos/{cam}/to_timestamp"]) * meta.fps)
             if have < 0:
                 bad.setdefault(i, f"{cam.split('.')[-1]} video file {path.name} missing")
-            elif have < need - 1:
+            elif have < need:
                 bad.setdefault(i, f"{cam.split('.')[-1]} video {path.name} holds {have} frames, episode needs up to {need}")
     return bad
 
 
-def select_episodes(ds, root: Path, keep: str, min_frames: int, prompts: set[str] | None, allow_dry: bool):
-    """(episode indices to drop, reasons per dropped episode, per-task count of kept episodes)."""
+def select_episodes(ds, root: Path, keep: str, min_frames: int, prompts: set[str] | None, allow_dry: bool,
+                    teleop: bool):
+    """(episode indices to drop, reasons per dropped episode, per-task count of kept episodes).
+
+    Fails closed: a recorded run (console/eval) is admitted only through a sidecar row that states run_mode and
+    valid. Only sources declared --teleop (lerobot-record demos, no sidecar) skip the sidecar rules."""
     side = read_sidecar(root)
+    if teleop and side:
+        raise SystemExit(f"{root} is declared --teleop but has a run sidecar ({', '.join(SIDECARS)}): pass it as --source")
+    if not teleop and not side:
+        raise SystemExit(f"{root} has no run sidecar: if it holds leader-arm demos (console/teleop.sh), pass it as --teleop")
     eps = ds.meta.episodes
     short_video = video_shortfalls(ds.meta, root)
     drop, why, kept = [], {}, Counter()
@@ -143,12 +152,18 @@ def select_episodes(ds, root: Path, keep: str, min_frames: int, prompts: set[str
         reason = None
         if n < min_frames:
             reason = f"{n} frames < {min_frames}"
+        elif not teleop and s is None:
+            reason = "no sidecar row for this episode (provenance unknown)"
+        elif not teleop and ("run_mode" not in s or "valid" not in s):
+            reason = "sidecar row without run_mode/valid (recorded before 804fb08, provenance unknown)"
         elif i in short_video:
             reason = short_video[i]
-        elif s is not None and s.get("valid") is False and not (allow_dry and s.get("run_mode") == "dry"):
-            reason = f"recorder marked invalid (run_mode {s.get('run_mode')}, encoder_dropped {s.get('encoder_dropped')})"
-        elif s is not None and s.get("run_mode") in ("dry", "fake") and not allow_dry:
-            reason = f"{s['run_mode']} run: the arm did not follow the commands, state and action disagree"
+        elif not teleop and not (s.get("run_mode") == "live" and s.get("valid") is True):
+            # decision 09: only live runs the recorder vouches for. --allow-dry is a diagnostic override only.
+            dry_ok = allow_dry and s.get("run_mode") == "dry" and not s.get("dropped_frames") \
+                and not any((s.get("encoder_dropped") or {}).values())
+            if not dry_ok:
+                reason = f"run_mode {s.get('run_mode')!r}, valid {s.get('valid')!r}: only live runs with valid true train"
         elif s is not None and s.get("dropped_frames", 0):
             reason = f"{s['dropped_frames']} frames dropped while recording (timing gap)"
         elif s is not None and s.get("interventions"):
@@ -224,7 +239,10 @@ def parse_source(text: str, default_map: Path | None) -> tuple[Path, Path]:
 
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--source", action="append", required=True, help="LeRobot dataset root, optionally DIR=MAP.json")
+    p.add_argument("--source", action="append", default=[],
+                   help="console/eval recording (needs its sidecar), optionally DIR=MAP.json")
+    p.add_argument("--teleop", action="append", default=[],
+                   help="leader-arm demos from console/teleop.sh (no sidecar), optionally DIR=MAP.json")
     p.add_argument("--mapping", type=Path, default=None, help="default joint map (console/fit_reference.py output)")
     p.add_argument("--out", type=Path, required=True, help="new dataset root (must not exist)")
     p.add_argument("--repo-id", default=None, help="LeRobot repo_id of the output (default alerest285/<out name>)")
@@ -252,11 +270,13 @@ def main(argv=None) -> int:
     work = Path(tempfile.mkdtemp(prefix="lora-prepare-", dir=out.parent if out.parent.exists() else None))
     parts, manifest_sources, values = [], [], {k: [] for k in MAPPED}
     try:
-        for n, text in enumerate(a.source):
+        if not a.source and not a.teleop:
+            raise SystemExit("give at least one --source or --teleop")
+        for n, (text, teleop) in enumerate([(t, False) for t in a.source] + [(t, True) for t in a.teleop]):
             src, mp = (Path(text).expanduser(), None) if a.no_map else parse_source(text, default_map)
             ds = LeRobotDataset(f"local/{src.name}", root=src)
             check_features(ds.meta, src)
-            drop, why, kept = select_episodes(ds, src, a.keep, a.min_frames, prompts, a.allow_dry)
+            drop, why, kept = select_episodes(ds, src, a.keep, a.min_frames, prompts, a.allow_dry, teleop)
             dst = work / f"src{n}"
             if len(drop) == ds.meta.total_episodes:
                 print(f"{src}: no episode kept, skipped")
@@ -266,14 +286,17 @@ def main(argv=None) -> int:
                 delete_episodes(ds, drop, output_dir=dst, repo_id=f"local/{src.name}-kept")
             else:
                 shutil.copytree(src, dst, ignore=shutil.ignore_patterns(*SIDECARS))
-            entry = {"root": str(src), "episodes": ds.meta.total_episodes, "kept": ds.meta.total_episodes - len(drop),
+            entry = {"root": str(src), "kind": "teleop" if teleop else "run", "episodes": ds.meta.total_episodes, "kept": ds.meta.total_episodes - len(drop),
                      "kept_per_task": dict(kept), "dropped": {str(k): v for k, v in why.items()}}
             if mp is not None:
                 jm = mm.JointMap.load(mp)
                 vals = to_model_space(dst, jm)
                 for k in MAPPED:
                     values[k].append(vals[k])
-                entry["mapping"] = {"path": str(mp), "sha256": sha256(mp), "robot_id": jm.meta.get("robot_id"),
+                digest = sha256(mp)
+                (work / "maps").mkdir(exist_ok=True)
+                shutil.copy2(mp, work / "maps" / f"{digest}.json")
+                entry["mapping"] = {"path": str(mp), "sha256": digest, "copy": f"maps/{digest}.json", "robot_id": jm.meta.get("robot_id"),
                                     "calibration_sha256": jm.meta.get("calibration_sha256"),
                                     "k": [round(float(x), 4) for x in jm.k]}
             manifest_sources.append(entry)
@@ -287,6 +310,8 @@ def main(argv=None) -> int:
             merged = LeRobotDataset(repo_id, root=out)
         else:
             merged = merge_datasets(parts, output_repo_id=repo_id, output_dir=out)
+        if (work / "maps").exists():
+            shutil.copytree(work / "maps", out / "maps")
     finally:
         shutil.rmtree(work, ignore_errors=True)
 

@@ -1,5 +1,5 @@
 {
-  "dataset": {"repo_id": "SET_BY_TRAIN_SH", "eval_split": 0.1},
+  "dataset": {"repo_id": "SET_BY_TRAIN_SH", "eval_split": 0.1, "return_uint8": true},
   "policy": {
     "path": "SET_BY_TRAIN_SH", "device": "cuda", "push_to_hub": false,
     "caption_dropout": 0.1, "augment": false, "gradient_checkpointing": true,
@@ -14,10 +14,10 @@
   "ema": {"enable": true, "decay": 0.999},
   "accelerator": {"mixed_precision": "bf16", "gradient_accumulation": {"steps": 4}},
   "batch_size": 2, "steps": 10000, "save_freq": 500,
-  "seed": 42, "num_workers": 12, "prefetch_factor": 4,
+  "seed": 42, "num_workers": 12, "prefetch_factor": 2,
   "persistent_workers": true, "dataloader_multiprocessing_context": "spawn",
   "log_freq": 20,
-  "env_eval_freq": 0, "eval_steps": 500,
+  "env_eval_freq": 0, "eval_steps": 500, "max_eval_samples": 64,
   "wandb": {"enable": false},
   "output_dir": "SET_BY_TRAIN_SH"
 }
