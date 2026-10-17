@@ -101,6 +101,11 @@ cd robot && uv run --python 3.13 python camera_check.py --scene 0 --wrist 1 && c
 # 3. calibrate the follower (interactive, a human moves the arm): middle pose + ENTER, then every joint through its full range + ENTER
 console/calibrate.sh --port /dev/tty.usbmodemXXXX
 
+# 3b. map YOUR arm's joint ranges onto the checkpoint's (fixes the calibration mismatch). Torque goes OFF: hold the arm.
+#     For 45 s move it through the task workspace: rest pose, reach every spot on the table, high/low, gripper fully
+#     open and closed, wrist rolled both ways. Writes ~/hackathon-data/joint_mapping.json, which the console loads.
+cd robot && uv run --python 3.13 python ../console/fit_mapping.py --port /dev/tty.usbmodemXXXX && cd ..
+
 # 4. start the console in DRY RUN (the arm is read, never moved). The page opens at http://127.0.0.1:8765
 console/start.sh --port /dev/tty.usbmodemXXXX --scene 0 --wrist 1
 ```
@@ -108,8 +113,12 @@ console/start.sh --port /dev/tty.usbmodemXXXX --scene 0 --wrist 1
 5. **On the page, check before anything moves:**
    - **Follower calibration** card shows `ok`, the file path and all six motors. `MISSING` means: redo step 3.
    - Camera previews: scene left, wrist right.
-   - Joint table: put the arm in its rest pose. Every **measured** value must sit inside the **trained range** column. Red rows mean
-     the calibration differs from what the model was trained on: do not go live, tell alerest285.
+   - The **mapping on** pill is green. `mapping MISSING` means: do step 3b.
+   - Joint table: **arm (deg)** is your arm, **model space** is what the model sees after the mapping. Model space must sit inside
+     the **trained range**; red rows mean a pose outside your sweep: refit 3b covering it.
+   - **Direction check:** in dry run with an instruction running, watch the **command** column while moving nothing. If a joint's
+     command pulls clearly the wrong way (e.g. the arm would fold when it should reach), refit with that joint flipped:
+     `... fit_mapping.py --port ... --flip elbow_flex` (several joints allowed), and tell the team which ones.
    - Type `pick up the small disk and place it on the middle peg`, press **Run**. In dry run the **command** column changes and
      the arm stays still. The turnaround reads about 500–600 ms.
 6. **Live**, with a person at the arm and a hand on the power switch: Ctrl-C, then

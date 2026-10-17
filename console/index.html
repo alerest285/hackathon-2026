@@ -30,7 +30,7 @@
 <body>
 <main>
   <div class="card bar">
-    <h1>Arm Console</h1><span id="mode" class="pill">...</span><span id="conn" class="pill">not connected</span>
+    <h1>Arm Console</h1><span id="mode" class="pill">...</span><span id="map" class="pill" title="joint mapping into the checkpoint's convention">mapping ...</span><span id="conn" class="pill">not connected</span>
     <span class="mute" id="task">no instruction yet</span>
   </div>
 
@@ -59,7 +59,7 @@
   </div>
 
   <div class="grid2">
-    <div class="card"><table><thead><tr><th>joint</th><th>measured</th><th>command</th><th>trained range</th></tr></thead><tbody id="joints"></tbody></table></div>
+    <div class="card"><table><thead><tr><th>joint</th><th>arm (deg)</th><th>model space</th><th>command</th><th>trained range</th></tr></thead><tbody id="joints"></tbody></table></div>
     <div class="card kv" id="kv"></div>
   </div>
 
@@ -99,7 +99,8 @@ async function tick() {
     }
     const names = s.state ? Object.keys(s.state) : [];
     const oor = new Set(s.out_of_range || []), tr = s.trained_range || {};
-    $('joints').innerHTML = names.map(n => `<tr${oor.has(n)?' style="color:var(--bad);font-weight:600"':''}><td>${n}</td><td>${fmt(s.state[n])}</td><td>${fmt(s.cmd[n])}</td><td class="mute">${tr[n]?tr[n].join(' … '):''}</td></tr>`).join('') || '<tr><td colspan=4 class="mute">connects on the first instruction</td></tr>';
+    const raw = s.raw_state || s.state || {};
+    $('joints').innerHTML = names.map(n => `<tr${oor.has(n)?' style="color:var(--bad);font-weight:600"':''}><td>${n}</td><td>${fmt(raw[n])}</td><td>${fmt(s.state[n])}</td><td>${fmt(s.cmd[n])}</td><td class="mute">${tr[n]?tr[n].join(' … '):''}</td></tr>`).join('') || '<tr><td colspan=5 class="mute">connects on the first instruction</td></tr>';
     const c = s.last_chunk || {}, st = s.stats || {};
     const kv = { 'tick': s.tick, 'actions queued': s.remaining, 'last turnaround ms': c.turnaround_ms, 'server ms': c.server_ms,
       'chunk accepted': c.accepted, 'tick lateness ms': s.lateness_ms,
@@ -108,6 +109,10 @@ async function tick() {
     for (const [k,v] of Object.entries(st)) if (typeof v !== 'object') kv[k] = v;
     $('kv').innerHTML = Object.entries(kv).map(([k,v]) => `<div class="mute">${k}</div><div>${fmt(v)}</div>`).join('');
     $('hist').innerHTML = (s.history||[]).slice().reverse().map(h => `${h.t} ${h.reset?'run':'next'}: ${h.task}`).join('<br>') || 'none yet';
+    const m = s.mapping || {};
+    $('map').textContent = 'mapping ' + (m.status || '?') + (m.fitted ? ' (' + m.fitted.slice(0,16) + ')' : '');
+    $('map').className = 'pill ' + (m.status === 'on' ? 'dry' : 'live');
+    $('map').title = (m.path || '') + (m.warning ? ' · ' + m.warning : '');
     const cal = s.calibration || {};
     $('calst').textContent = cal.status || '...'; $('calst').className = 'pill ' + (cal.status === 'ok' ? 'dry' : (cal.status === 'MISSING' ? 'live' : ''));
     $('calpath').textContent = (cal.path || '') + (cal.modified ? ' · ' + cal.modified : '');
@@ -119,7 +124,8 @@ async function tick() {
       `episode ${r.episode_frames} frames · ${r.episodes_saved} saved this session · ${r.root}` + (r.error ? ' · ERROR ' + r.error : '') + (r.dropped ? ` · ${r.dropped} dropped` : '');
     $('rec').style.color = s.recording ? 'var(--bad)' : '';
     if (s.error) $('error').textContent = s.error;
-    else if ((s.out_of_range||[]).length) $('error').textContent = 'Outside the range the model was trained on: ' + s.out_of_range.join(', ') + '. Your arm calibration likely differs from BFL\'s; zero-shot will not work until it matches (see console/README.md).';
+    else if (m.status === 'MISSING') $('error').textContent = 'No joint mapping yet: Ctrl-C, run console/fit_mapping.py (README step 3b), start again. Without it the model sees the wrong joint ranges.';
+    else if ((s.out_of_range||[]).length) $('error').textContent = 'Outside the range the model was trained on: ' + s.out_of_range.join(', ') + '. Refit the mapping covering this pose, or stay inside the workspace.';
   } catch (e) { $('conn').textContent = 'console not reachable'; }
 }
 function cams() { for (const c of ['scene','wrist']) { const i = new Image(); i.onload = () => { $('cam-'+c).src = i.src; }; i.src = '/cam/'+c+'.jpg?'+Date.now(); } }

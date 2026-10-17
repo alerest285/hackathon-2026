@@ -55,6 +55,9 @@ def parse_args(argv=None):
     p.add_argument("--fake-net", nargs="?", const="pickplace", choices=("hold", "sine", "pickplace"), default=None)
     p.add_argument("--robot-type", default="so100_follower", choices=("so100_follower", "so101_follower"),
                    help="written into the recording's metadata; LeRobot drives both with the same class")
+    p.add_argument("--mapping", type=Path, default=None,
+                   help="joint mapping from fit_mapping.py (default ~/hackathon-data/joint_mapping.json, used if present)")
+    p.add_argument("--no-mapping", action="store_true", help="send our raw joint values to the model (not recommended)")
     p.add_argument("--no-record", action="store_true", help="do not record runs as a LeRobot dataset")
     p.add_argument("--record-repo", default="alerest285/so100_hanoi_flux_zeroshot",
                    help="LeRobot repo_id of the recording (stays local until you push it)")
@@ -75,8 +78,21 @@ class Console:
             robot_id=a.robot_id, scene=a.scene, wrist=a.wrist, server=a.server, image_size=256,
             image_format="jpeg", jpeg_quality=95, latency_ms=400.0, jitter_ms=50.0)
         robot, cameras, net = robot_run.build(ns)
-        cfg = LoopConfig(mode=a.mode, step_max_deg=a.step_max, joint_limits=robot_run.load_limits(a.limits),
-                         dry_run=not a.live)
+        limits = robot_run.load_limits(a.limits)
+        from mapping import DEFAULT_PATH, JointMap, MappedRobot
+
+        self.jmap, self.mapping_status = None, "off (--no-mapping)"
+        mpath = Path(a.mapping or DEFAULT_PATH).expanduser()
+        if not a.no_mapping:
+            if mpath.exists():
+                self.jmap = JointMap.load(mpath)
+                robot = MappedRobot(robot, self.jmap)  # loop, history and server all see the checkpoint's convention
+                limits = self.jmap.limits_to_model(limits)
+                self.mapping_status = "on"
+            else:
+                self.mapping_status = "MISSING"
+        self.mapping_path = str(mpath)
+        cfg = LoopConfig(mode=a.mode, step_max_deg=a.step_max, joint_limits=limits, dry_run=not a.live)
         self.loop = ControlLoop(robot, cameras, net, cfg)
         self.lock = threading.Lock()
         self.jpeg: dict[str, bytes] = {}
@@ -102,7 +118,10 @@ class Console:
         if self.recorder and self.recording and info.task:
             sc, wr = self.full.get("scene"), self.full.get("wrist")
             if sc is not None and wr is not None:
-                self.recorder.add(info.state, info.cmd, sc, wr, info.task)
+                st_, cmd_ = info.state, info.cmd
+                if self.jmap is not None:  # record in the arm's own units, like lerobot-record would
+                    st_, cmd_ = self.jmap.to_ours(st_), self.jmap.to_ours(cmd_)
+                self.recorder.add(st_, cmd_, sc, wr, info.task)
         with self.lock:
             self.info = info
             if info.chunk:
@@ -161,6 +180,13 @@ class Console:
                       frame_age_ms={k: round(float(v), 0) for k, v in (info.frame_age_ms or {}).items()})
         st["last_chunk"] = chunk
         st["recording"] = self.recording
+        st["mapping"] = {"status": self.mapping_status, "path": self.mapping_path,
+                         "fitted": (self.jmap.meta or {}).get("fitted_at") if self.jmap else None}
+        if self.jmap is not None and info is not None:
+            st["raw_state"] = dict(zip(STATE_NAMES, np.round(self.jmap.to_ours(info.state).astype(float), 1).tolist()))
+            hello = getattr(self.loop, "hello", None) or {}
+            if hello.get("state_q01") and np.max(np.abs(np.asarray(hello["state_q01"]) - self.jmap.m_lo)) > 1:
+                st["mapping"]["warning"] = "server checkpoint range differs from the mapping's model range: refit"
         st["calibration"] = self.calibration()
         st["recorder"] = self.recorder.status() if self.recorder else None
         # The checkpoint was trained on one arm calibration. Joints far outside its q01..q99 range mean ours differs,

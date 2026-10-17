@@ -19,6 +19,19 @@ installs `robot/`'s environment on first use, and opens **http://127.0.0.1:8765*
 | camera previews | scene (fixed) must look at the workspace; wrist must be on the gripper. If they are swapped, swap `--scene`/`--wrist` |
 | joint table | measured, commanded, and the **range the checkpoint was trained on**. Red rows are outside it |
 
+## Calibration mapping (why the model needs it)
+
+BFL trained the base model on ~1,000 community SO-100/SO-101 datasets, **each normalized by its own joint range**
+(`configs/so101/community_corpus.json` in flux-action). The released `flux-3-action-so101` uses one fixed range,
+its `state_q01..state_q99` in the server hello: shoulder lift 85..184, elbow 61..179 and so on. A standard LeRobot
+calibration reads e.g. shoulder lift about −100 at rest, which the model would treat as far outside anything it saw.
+
+`console/fit_mapping.py` measures our arm's 1st/99th percentiles over a hand-guided sweep and writes a per-joint linear map
+(`console/mapping.py`). The console wraps the arm so the control loop, its history and the server all work in the checkpoint's
+convention, while recordings stay in the arm's own degrees. This repeats what training did per dataset.
+It assumes each joint turns the same way as in BFL's data; `--flip <joint>` fixes one that does not. Tested with the simulated arm
+(round trip exact to 1e-5 deg, rest pose lands inside the trained range); not yet on the real arm.
+
 ## Recording (native LeRobot format)
 
 Every run is recorded as a **LeRobotDataset** episode, the same layout `lerobot-record` writes:
