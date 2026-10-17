@@ -135,7 +135,7 @@ args=(-m lerobot.scripts.lerobot_train --config_path="$ROOT/train/lora.json"
 [ "$mode" = probe ] && args+=(--save_checkpoint=false)
 if [ -n "$wandb" ]; then
   [ -n "${WANDB_API_KEY:-}" ] || grep -qs api.wandb.ai ~/.netrc || { echo "--wandb needs WANDB_API_KEY in the env (or wandb login)" >&2; exit 2; }
-  args+=(--wandb.enable=true --wandb.entity="${wandb%%/*}" --wandb.project="${wandb#*/}" --job_name="$run")
+  args+=(--wandb.enable=true --wandb.entity="${wandb%%/*}" --wandb.project="${wandb#*/}" --wandb.disable_artifact=true --job_name="$run")
 fi
 cat > "$cmd" <<EOF
 # $(date -u +%FT%TZ) $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo no-git) mode=$mode batch=$batch accum=$accum effective=$effective workers=$workers
