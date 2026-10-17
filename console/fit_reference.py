@@ -44,29 +44,35 @@ PHOTO = "https://raw.githubusercontent.com/huggingface/lerobot/6d723c45a993d1e03
 
 
 def fit(rest, right=None, straight=None):
-    """rest/right/straight: (6,) our degrees. Returns (A, B, notes) with old = A * ours + B per joint (gripper identity)."""
+    """rest/right/straight: (6,) our degrees. Returns (A, B, notes, checks) with old = A * ours + B per joint (gripper
+    identity). checks: pan and wrist_flex are "confirmed", "flipped" (measured opposite to SIGN) or "unchecked"."""
     sign, notes = SIGN.copy(), []
+    checks = {"shoulder_pan": "unchecked", "wrist_flex": "unchecked"}
     if right is not None:  # the old rotated pose turns the pan +90 deg to the robot's right
         d = right[0] - rest[0]
         if abs(d) < 15:
-            notes.append(f"pan moved {d:+.0f} deg only: kept the default sign {sign[0]:+.0f}")
+            notes.append(f"pan moved {d:+.0f} deg only: turn it about 45 deg and redo")
         else:
-            sign[0] = 1.0 if d > 0 else -1.0
+            measured = 1.0 if d > 0 else -1.0
+            checks["shoulder_pan"] = "confirmed" if measured == sign[0] else "flipped"
+            sign[0] = measured
             notes.append(f"pan: robot's right reads {d:+.0f} deg in ours -> sign {sign[0]:+.0f}")
     b = DATASET_REST - sign * SCALE * rest[:5]
     if straight is not None:  # wrist in line with the forearm is 0 in the old convention
         w = sign[3] * SCALE * straight[3] + b[3]
         if abs(w) > 25:
             alt = -sign[3] * SCALE * straight[3] + (DATASET_REST[3] + sign[3] * SCALE * rest[3])
-            if abs(alt) < abs(w):
+            if abs(alt) <= 25:
                 sign[3] = -sign[3]
                 b[3] = DATASET_REST[3] - sign[3] * SCALE * rest[3]
+                checks["wrist_flex"] = "flipped"
                 notes.append(f"wrist_flex: straight read {w:.0f} old deg, reversed reads {alt:.0f} -> sign {sign[3]:+.0f}")
             else:
-                notes.append(f"wrist_flex: straight reads {w:.0f} old deg (expected ~0): check the straight pose")
+                notes.append(f"wrist_flex: straight reads {w:.0f} old deg either way (expected ~0): redo the straight pose")
         else:
+            checks["wrist_flex"] = "confirmed"
             notes.append(f"wrist_flex: straight reads {w:+.0f} old deg (expected ~0): sign {sign[3]:+.0f} confirmed")
-    return np.r_[sign * SCALE, 1.0], np.r_[b, 0.0], notes
+    return np.r_[sign * SCALE, 1.0], np.r_[b, 0.0], notes, checks
 
 
 def travel(calibration: Path):
@@ -102,6 +108,8 @@ def main():
     p.add_argument("--out", type=Path, default=DEFAULT_PATH)
     p.add_argument("--limits-out", type=Path, default=DEFAULT_PATH.with_name("limits.json"))
     p.add_argument("--from-saved", action="store_true", help="refit from the readings stored in --out (no arm)")
+    p.add_argument("--accept-unchecked", action="store_true",
+                   help="write the map even if the pan or wrist check was inconclusive (default: refuse)")
     a = p.parse_args()
     from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
@@ -143,8 +151,14 @@ def main():
 
 
 def report(a, calibration, rest, right, straight):
-    A, B, notes = fit(rest, right, straight)
+    A, B, notes, checks = fit(rest, right, straight)
+    if "unchecked" in checks.values() and not a.accept_unchecked:
+        sys.exit("\n".join(notes) + "\nNot written: a hand check was inconclusive. Redo it, or pass --accept-unchecked.")
+    # Hand-checked: pan and wrist_flex signs, the wrist_flex offset (straight = 0). From the rest pose and issue #2 only:
+    # the other offsets and the lift/elbow/wrist_roll signs. Not a validation of the whole map.
     meta = {"method": "old LeRobot SO-100 convention, rest-anchored (console/fit_reference.py, T21)", "robot_id": a.robot_id,
+            "checks": checks, "not_hand_checked": ["shoulder_lift sign (rest geometry)", "elbow_flex sign (rest geometry)",
+                                                   "wrist_roll sign (issue #2)", "pan/lift/elbow/wrist_roll offsets (rest)"],
             "sign": np.sign(A[:5]).tolist(), "offset_deg": np.round(B[:5], 2).tolist(), "rest_ours": np.round(rest, 2).tolist(),
             "right_ours": np.round(right, 2).tolist(), "straight_ours": np.round(straight, 2).tolist(), "notes": notes,
             "fitted_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
