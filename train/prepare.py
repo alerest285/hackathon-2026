@@ -315,7 +315,7 @@ def main(argv=None) -> int:
             flag = "  <- check the map" if c["outside_pct"] > 10 else ""
             print(f"  {c['joint']:<14} {c['ours_min']:8.1f} .. {c['ours_max']:8.1f}   ckpt {c['ckpt_q01']:8.1f} .. "
                   f"{c['ckpt_q99']:8.1f}   outside {c['outside_pct']:5.1f} %{flag}")
-    print(f"\nNext: rsync -a {out}/ <pod>:/workspace/datasets/{out.name}/  then train/train.sh probe {out.name}")
+    print(f"\nNext: rsync -a --no-owner --no-group {out}/ <pod>:/workspace/datasets/{out.name}/  then train/train.sh probe {out.name}")
     return 0
 
 

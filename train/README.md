@@ -11,7 +11,7 @@ first, and why training gets its own GPU: decision 09.
 |---|---|---|---|
 | 1 | Mac with the arm | `console/teleop.sh record ... --task "<exact prompt>"` (leader arm), or console runs with `--record` | LeRobot datasets in the arm's own degrees |
 | 2 | Mac | `uv run --python 3.13 --with "lerobot[dataset]==0.6.1" python train/prepare.py --source <dir> [--source <dir>=<map>] --mapping ~/hackathon-data/joint_mapping.json --out ~/hackathon-data/lora_v1` | one dataset in model space + `prepare_manifest.json` |
-| 3 | Mac | `rsync -a ~/hackathon-data/lora_v1/ root@<pod>:/workspace/datasets/lora_v1/` | dataset on the GPU host |
+| 3 | Mac | `rsync -a --no-owner --no-group ~/hackathon-data/lora_v1/ root@<pod>:/workspace/datasets/lora_v1/` (the network volume refuses chown) | dataset on the GPU host |
 | 4 | GPU host, once | `bash train/setup.sh` | LeRobot env with training extras, pinned weights, `/workspace/train-env.sh` |
 | 5 | GPU host | `bash train/train.sh probe lora_v1 --batch 2` then `--batch 4` | s/step, data wait, peak VRAM, hours and $ for the full run |
 | 6 | GPU host | `bash train/train.sh run lora_v1 --batch <fastest that fits>` | tmux `lora-<run>`, checkpoints every 125 updates |

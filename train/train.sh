@@ -70,7 +70,7 @@ args=(-m lerobot.scripts.lerobot_train --config_path="$ROOT/train/lora.json"
 [ "$mode" = probe ] && args+=(--save_checkpoint=false)
 
 cat > "/workspace/train-logs/$run.cmd" <<EOF
-# $(date -u +%FT%TZ) $(git -C "$ROOT" rev-parse --short HEAD) mode=$mode batch=$batch accum=$accum effective=$effective workers=$workers
+# $(date -u +%FT%TZ) $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo no-git) mode=$mode batch=$batch accum=$accum effective=$effective workers=$workers
 cd "$LEROBOT_DIR" && PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TOKENIZERS_PARALLELISM=false $PY ${args[*]}
 EOF
 echo "run $run: batch $batch x accum $accum = $effective, $steps microsteps ($((steps / accum)) updates), $workers loader workers"
