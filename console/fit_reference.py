@@ -23,6 +23,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -110,10 +112,29 @@ def limits_for(A, B, calibration: Path, rest):
 
 
 def save_outputs(jm: JointMap, limits: dict, out: Path, limits_out: Path):
+    """Both files are written in full before either replaces the old one; a failed second swap restores the old map."""
+    tmp_map, tmp_lim = out.with_name(out.name + ".tmp"), limits_out.with_name(limits_out.name + ".tmp")
+    try:
+        jm.save(tmp_map)
+        tmp_lim.write_text(json.dumps(limits, indent=1))
+    except OSError:
+        tmp_map.unlink(missing_ok=True)
+        tmp_lim.unlink(missing_ok=True)
+        raise
+    backup = None
     if out.exists():
-        out.rename(out.with_name(f"{out.stem}.before-{time.strftime('%Y%m%dT%H%M%S')}.json"))
-    jm.save(out)
-    limits_out.write_text(json.dumps(limits, indent=1))
+        backup = out.with_name(f"{out.stem}.before-{time.strftime('%Y%m%dT%H%M%S')}.json")
+        shutil.copy2(out, backup)
+    os.replace(tmp_map, out)
+    try:
+        os.replace(tmp_lim, limits_out)
+    except OSError:
+        if backup is not None:
+            shutil.copy2(backup, out)
+        else:
+            out.unlink(missing_ok=True)
+        tmp_lim.unlink(missing_ok=True)
+        raise
 
 
 def main():
@@ -136,7 +157,8 @@ def main():
         if saved.get("robot_id") != a.robot_id or saved.get("calibration_sha256") not in (None, sha256(robot.calibration_fpath)):
             sys.exit(f"Not written: {a.out} was fitted for {saved.get('robot_id')!r} under another calibration file")
         rest, right, straight = (np.asarray(saved[k], float) for k in ("rest_ours", "right_ours", "straight_ours"))
-        return report(a, robot.calibration_fpath, rest, right, straight)
+        # A map from before hashes were recorded keeps an unknown capture calibration: refitting cannot prove it.
+        return report(a, robot.calibration_fpath, rest, right, straight, captured_sha256=saved.get("calibration_sha256"))
     bus = robot.bus
     bus.connect()
 
@@ -164,14 +186,15 @@ def main():
         straight = read()
     finally:
         bus.disconnect(disable_torque=False)
-    report(a, robot.calibration_fpath, rest, right, straight)
+    report(a, robot.calibration_fpath, rest, right, straight, captured_sha256=sha256(robot.calibration_fpath))
 
 
 def sha256(path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def report(a, calibration, rest, right, straight):
+def report(a, calibration, rest, right, straight, captured_sha256):
+    """captured_sha256: hash of the calibration the readings were taken under, or None when that is unknown."""
     check_refs(rest=rest, right=right, straight=straight)
     A, B, notes, checks = fit(rest, right, straight)
     if "unchecked" in checks.values() and not a.accept_unchecked:
@@ -180,7 +203,7 @@ def report(a, calibration, rest, right, straight):
     # Hand-checked: pan and wrist_flex signs, the wrist_flex offset (straight = 0). From the rest pose and issue #2 only:
     # the other offsets and the lift/elbow/wrist_roll signs. The rest pose matches the dataset by construction.
     meta = {"method": "old LeRobot SO-100 convention, rest-anchored (console/fit_reference.py, T21)", "robot_id": a.robot_id,
-            "status": "experimental: not a physical validation of every joint", "calibration_sha256": sha256(calibration),
+            "status": "experimental: not a physical validation of every joint", "calibration_sha256": captured_sha256,
             "checks": checks, "not_hand_checked": ["shoulder_lift sign (rest geometry)", "elbow_flex sign (rest geometry)",
                                                    "wrist_roll sign (issue #2)", "pan/lift/elbow/wrist_roll offsets (rest)"],
             "sign": np.sign(A[:5]).tolist(), "offset_deg": np.round(B[:5], 2).tolist(), "rest_ours": np.round(rest, 2).tolist(),
