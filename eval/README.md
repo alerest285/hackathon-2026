@@ -70,6 +70,53 @@ never moved an arm (they are never `valid`).
 every prompt and answers a verdict with success after an auto end and fail after a timeout, for runs without a
 terminal. Fake runs keep the configured label unless `--label` is given, so name them apart from real runs.
 
+## Scored task runs (run_task.py)
+
+For any single-instruction task with countable steps, such as Saad's sorting task (one step = one object on its side
+of the black line). It logs what the grading counts: successful attempts, total attempts and completed steps (the
+longest chain). It uses the same rig as the Hanoi runner: joint map or none, native limits and guard, `--live`
+refusals, video, ticks, chunks and the LeRobot dataset of attempts.
+
+```sh
+# the GPU serve commands that warm the instruction up (zero-shot and a LoRA adapter)
+uv run --project eval python eval/run_task.py --print-warmup
+
+# zero-shot, HF-sim normalization (server --norm-stats or the hfsim-norm checkpoint): no joint map, native degrees
+uv run --project eval python eval/run_task.py --live --limits ~/hackathon-data/so100_phys_limits.json \
+    --port /dev/ttyACM1 --robot-id my_follower_arm --steps 4 --attempts 10 --label zero-shot
+
+# the LoRA adapter behind the same normalization; a qmap-trained adapter needs --mapping <its qmap> instead
+uv run --project eval python eval/run_task.py --live --limits ~/hackathon-data/so100_phys_limits.json \
+    --port /dev/ttyACM1 --robot-id my_follower_arm --steps 4 --attempts 10 --label lora-raw
+
+# one comparison table across runs (Hanoi runs and task runs print as two tables)
+uv run --project eval python -m hanoi_eval.summary --status eval/runs/*-task
+```
+
+| Key | During an attempt |
+|---|---|
+| enter | start the attempt (each attempt is a fresh episode: `set_task(..., reset_history=True)`) |
+| `+` or `=` | one step done (its active time is logged) |
+| `-` | undo the last step |
+| space | pause / resume: an intervention, and the history restarts on resume |
+| `s` / `f` | end the attempt: success / fail |
+| `q` | quit the run |
+
+After `task.attempt_timeout_s` (180 s by default) of active time the arm holds and the operator gives the verdict.
+Quits and infrastructure errors are kept in the files but left out of the totals. Output:
+`eval/runs/<UTC stamp>-<label>-task/`.
+
+- `run.json` adds a `task` entry (instruction, steps_total, attempts, timeout).
+- `attempts.jsonl` has one line per attempt: steps_completed, steps_total, step_times_s, complete, success,
+  end_reason `key|timeout|quit|error`, times, pauses.
+- `summary.md` / `summary.json`.
+- One `attNN/` per attempt: `attempt.json`, `ticks.jsonl`, `chunks.npz`, `scene.mp4`, `wrist.mp4`, `*.times.csv`.
+
+Live attempts become LeRobot episodes in `~/hackathon-data/so100_task_eval`, with the steps in
+`hanoi_episodes.jsonl`. An attempt under 10 frames is discarded, never saved: LeRobot 0.6.1 cannot finalize a
+dataset that holds a 1-frame episode. Defaults are in `config/task.toml`: Saad's instruction and cameras (scene 2,
+wrist 4), robot id `my_follower_arm`, no joint map.
+
 ## The protocol (decision 05)
 
 1. **Sanity:** `--sanity N` runs every legal single move N times, each as a one-step episode from its own

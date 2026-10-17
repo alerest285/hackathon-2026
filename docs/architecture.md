@@ -204,6 +204,14 @@ including a resume after a pause. `FakeRobot`, `FakeCameras` and `FakeNet` stand
   - `chunks.npz`: every chunk received, in model space, with its id, tick, d, start, reason and attempt.
   - `scene.mp4` / `wrist.mp4`, plus `*.times.csv` to align frames with ticks.
 
+`eval/run_task.py` scores one instruction over K attempts on the same rig. The operator counts the task's steps
+live (`+`/`-`), and `s`/`f`/timeout give the verdict. It writes `eval/runs/<UTC stamp>-<label>-task/` with `run.json`
+(adding `task`), `attempts.jsonl` (steps_completed, steps_total, step_times_s, complete, success, end_reason
+`key|timeout|quit|error`), `summary.md`/`summary.json` (successes, steps completed sum/mean/max) and one `attNN/` per
+attempt (`attempt.json`, ticks, chunks, video). `hanoi_eval.summary --status` prints task runs as a second table.
+Recorded attempts carry their step counts in `hanoi_episodes.jsonl`. An attempt under 10 frames is never saved,
+since LeRobot 0.6.1 cannot finalize a dataset holding a 1-frame episode.
+
 Live runs also record each step attempt as one LeRobotDataset episode, task = its prompt, in native units through
 `console/recorder.py`, to `~/hackathon-data/so100_hanoi_eval`. Its sidecars are `console_episodes.jsonl` (run_mode,
 drops, valid) and `hanoi_episodes.jsonl` (verdict, run, step, attempt, interventions).

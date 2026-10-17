@@ -21,6 +21,9 @@ import threading
 from pathlib import Path
 
 REPO_DIR = Path(__file__).resolve().parents[2]
+# An episode this short is an accidental start, and LeRobot 0.6.1 cannot finalize a dataset holding a 1-frame episode
+# (ArrowInvalid on stats/observation.images.*/min): such attempts are discarded, never saved.
+MIN_EPISODE_FRAMES = 10
 CONSOLE_DIR = REPO_DIR / "console"
 
 
@@ -95,6 +98,8 @@ class HanoiDataset:
         self._task: str | None = None
         self._lock = threading.Lock()
         self.frames_added = 0
+        self._open_frames = 0  # frames of the attempt not yet ended
+        self.discarded = 0  # attempts too short to save
 
     def begin(self, task: str) -> None:
         with self._lock:
@@ -107,15 +112,21 @@ class HanoiDataset:
                 return
             self.writer.add(state, action, scene_bgr, wrist_bgr, task)
             self.frames_added += 1
+            self._open_frames += 1
 
     def end(self, verdict: str, meta: dict) -> None:
-        """Close the open attempt as one episode (nothing is saved when it got no frame). Runner thread only.
+        """Close the open attempt as one episode; one under MIN_EPISODE_FRAMES frames is discarded. Runner thread only.
 
         The save may block on a full writer queue, so it goes out after the lock is released: the control thread's
         add() must never wait for it. Order still holds, since every frame of this attempt was enqueued under the
         lock before _task was cleared, and the next begin() comes from this same thread after we return."""
         with self._lock:
             self._task = None
+            frames, self._open_frames = self._open_frames, 0
+        if frames < MIN_EPISODE_FRAMES:
+            self.discarded += 1
+            self.writer.discard()
+            return
         self.writer.save((verdict, meta))
 
     def pause(self) -> None:
@@ -124,7 +135,7 @@ class HanoiDataset:
             self._task = None
 
     def status(self) -> dict:
-        return {**self.writer.status(), "frames_added": self.frames_added}
+        return {**self.writer.status(), "frames_added": self.frames_added, "discarded_short": self.discarded}
 
     def close(self) -> None:
         self.writer.close()

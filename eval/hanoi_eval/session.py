@@ -22,6 +22,7 @@ from .hanoi import all_prompts
 from .keys import KeyListener
 from .recorder import git_info, make_run_dir, utc_now
 from .runner import HanoiRunner
+from .task import TaskRunner
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +41,8 @@ class SessionOptions:
     episodes: int | None = None
     sanity: int | None = None             # repeats per move; set = a sanity run
     record: bool | None = None            # LeRobotDataset: None = live runs when record.lerobot; True/False force it
+    task: bool = False                    # run_task.py: TaskRunner on cfg.task instead of the Hanoi sequencer
+    attempts: int | None = None           # task runs: None = task.attempts
     out: Path = field(default_factory=lambda: EVAL_DIR / "runs")
     argv: list[str] | None = None
 
@@ -75,12 +78,13 @@ def loop_config(cfg, dry_run: bool, joint_limits="config"):
     return LoopConfig(**{k: v for k, v in values.items() if k in known})
 
 
-def unwarmed_prompts(hello: dict, cfg) -> list[str]:
-    """Prompts of this config the server did not warm up (hello `warm_tasks`); [] when it does not say."""
+def unwarmed_prompts(hello: dict, cfg, prompts: list[str] | None = None) -> list[str]:
+    """Prompts of this config (or `prompts`) the server did not warm up (hello `warm_tasks`); [] when it does not
+    say."""
     warm = hello.get("warm_tasks")
     if warm is None:
         return []
-    return [text for text in all_prompts(cfg) if text not in set(warm)]
+    return [text for text in (all_prompts(cfg) if prompts is None else prompts) if text not in set(warm)]
 
 
 @dataclass
@@ -186,14 +190,17 @@ def run_session(cfg, opts: SessionOptions, keys_source=None, log=print) -> tuple
         else:
             what = "LIVE arm: commands are written" if opts.live else "dry run: commands are logged, not written"
         log(f"connected: {what}; server {hello.get('engine')} {hello.get('checkpoint') or ''}".rstrip())
-        cold = unwarmed_prompts(hello, cfg)
+        cold = unwarmed_prompts(hello, cfg, [cfg.task.instruction] if opts.task else None)
         if cold:
             log(f"WARNING: the server did not warm up {len(cold)} of this config's prompts (first: {cold[0]!r}), so "
                 "the first plan of each encodes its caption. Restart it with the command from run_hanoi.py "
                 "--print-warmup")
-        label = cfg.label + ("-sanity" if opts.sanity else ("-recover" if cfg.protocol == "recover" else "")) + (
-            "-demo" if cfg.mode == "demo" else ""
-        )
+        if opts.task:
+            label = cfg.label + "-task"
+        else:
+            label = cfg.label + ("-sanity" if opts.sanity else ("-recover" if cfg.protocol == "recover" else "")) + (
+                "-demo" if cfg.mode == "demo" else ""
+            )
         run_dir = make_run_dir(opts.out, label)
         dataset = open_dataset(cfg, opts)
         if dataset is not None:
@@ -223,11 +230,13 @@ def run_session(cfg, opts: SessionOptions, keys_source=None, log=print) -> tuple
             "platform": platform.platform(),
         }
         to_native = rig.joint_map.to_ours if rig.joint_map is not None else None
-        runner = HanoiRunner(loop, keys, cfg, run_dir, run_info=run_info, log=log, to_native=to_native,
-                             dataset=dataset)
+        runner_cls = TaskRunner if opts.task else HanoiRunner
+        runner = runner_cls(loop, keys, cfg, run_dir, run_info=run_info, log=log, to_native=to_native, dataset=dataset)
         log(f"run directory: {run_dir}")
         loop.start()
-        if opts.sanity:
+        if opts.task:
+            runner.run(opts.attempts)
+        elif opts.sanity:
             runner.run_sanity(opts.sanity)
         else:
             runner.run_episodes(opts.episodes)

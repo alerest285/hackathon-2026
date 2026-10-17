@@ -1,0 +1,55 @@
+# Scored task runs (run_task.py): one instruction, K attempts, steps counted live with + and -.
+# Every field is checked on load (hanoi_eval/config.py) and unknown keys are refused; the Hanoi fields keep their
+# defaults and are not used here. CLI flags override: --instruction --steps --attempts --attempt-timeout-s --label
+# --server --port --robot-id --mapping --limits --scene --wrist --loop-mode.
+
+label = "zero-shot"            # run directory suffix: eval/runs/<UTC stamp>-<label>-task; lora-raw, lora-ema, ...
+
+[task]
+# The exact caption the policy was trained on or is tested with (Saad's sorting task, 17.10).
+instruction = "Put the green objects at the right of the black line and the orange at the left of the black line"
+steps = 4                      # objects to sort: set it to the number on the table (one + per object on its side)
+attempts = 10
+attempt_timeout_s = 180.0      # active seconds (pauses excluded); then the operator gives the verdict
+
+[robot]
+port = ""                      # e.g. /dev/ttyACM1 on Saad's laptop (--port)
+id = "my_follower_arm"         # LeRobot calibration id (--robot-id)
+# No joint map by default: the HF-sim normalization (server --norm-stats, or the hfsim-norm checkpoint and its
+# LoRA) takes the arm's native LeRobot degrees. A policy trained or tested behind a map needs that same map:
+# --mapping ~/hackathon-data/maps/<map>.json (e.g. the qmap of the first LoRA run).
+mapping = ""
+
+[cameras]
+scene = 2                      # Saad's laptop: the top camera (--scene)
+wrist = 4                      # (--wrist)
+width = 640
+height = 480
+fps = 30
+image_size = 256
+image_format = "jpeg"
+jpeg_quality = 95
+
+[server]
+url = "ws://localhost:8000"    # through the ssh tunnel to the pod (--server)
+
+[loop]
+mode = "prefetch"              # sync: BFL's cadence (32 actions, then replan); kinder to a slow, shared GPU
+fps = 30.0
+period = 16
+crossfade = 6
+exec_horizon = 32
+chunk = 42
+step_max_deg = 6.0             # Saad's live runs used 3 (console --step-max 3)
+spin_margin_ms = 6.0
+
+[video]
+enabled = true
+codec = "mp4v"
+fps = 30.0
+
+[record]                       # live attempts as LeRobotDataset episodes, one per attempt, task = the instruction
+lerobot = true
+repo_id = "alerest285/so100_task_eval"
+root = "~/hackathon-data/so100_task_eval"   # local only; kept apart from the LoRA training sets
+robot_type = "so100_follower"

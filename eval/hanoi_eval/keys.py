@@ -1,4 +1,5 @@
-"""Operator keys on a background thread: s success, f fail, r retry, space pause/hold, q quit, enter continue.
+"""Operator keys on a background thread: s success, f fail, r retry, space pause/hold, q quit, enter continue,
+and for run_task.py + (or =) one task step done, - undo it.
 
 The runner announces what it waits for with expect()/ask() (a Prompt: context + allowed events). Keys
 that arrive for an earlier prompt, or that the current prompt does not allow, are dropped, so a stray
@@ -26,8 +27,12 @@ KEYMAP = {
     "q": "quit",
     "\n": "continue",
     "\r": "continue",
+    "+": "step",  # run_task.py: one step of the task done (= is + without shift)
+    "=": "step",
+    "-": "unstep",
 }
-EVENT_KEYS = {"success": "s", "fail": "f", "retry": "r", "pause": "space", "quit": "q", "continue": "enter"}
+EVENT_KEYS = {"success": "s", "fail": "f", "retry": "r", "pause": "space", "quit": "q", "continue": "enter",
+              "step": "+", "unstep": "-"}
 
 
 @dataclass(frozen=True)

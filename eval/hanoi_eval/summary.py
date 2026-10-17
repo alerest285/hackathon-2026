@@ -2,6 +2,7 @@
 
     uv run --project eval python -m hanoi_eval.summary eval/runs/<run>            # rewrite one run's summary
     uv run --project eval python -m hanoi_eval.summary --status eval/runs/*       # one status row per run
+                                                    (Hanoi runs and run_task.py runs in two tables)
 
 Episodes that ended with q (aborted) or with an infrastructure error (the control loop stopped, the server
 went away) are listed but left out of the totals: neither is a result of the policy.
@@ -222,8 +223,19 @@ def main(argv: list[str] | None = None) -> None:
     p.add_argument("runs", nargs="+", help="eval/runs/<run> directories")
     p.add_argument("--status", action="store_true", help="print one docs/status table row per run instead")
     a = p.parse_args(argv)
-    rows = []
+    rows, task_rows = [], []
     for path in a.runs:
+        if json.loads((Path(path) / "run.json").read_text()).get("kind") == "task":  # run_task.py
+            from .task import load_task_run, summarize_task, task_status_line, write_task_summary
+
+            run, attempts = load_task_run(path)
+            if a.status:
+                task_rows.append(task_status_line(summarize_task(run, attempts)["status_row"]))
+                continue
+            t = write_task_summary(path, run, attempts)["totals"]
+            print(f"{path}: wrote summary.md and summary.json; successes {t['successes']}/{t['valid_attempts']}, "
+                  f"steps completed {t['steps_completed']} (longest {t['max_steps']})")
+            continue
         run, episodes, attempts = load_run(path)
         if a.status:
             rows.append(status_line(summarize(run, episodes, attempts)["status_row"]))
@@ -236,8 +248,16 @@ def main(argv: list[str] | None = None) -> None:
             f"completed steps {t['completed_steps']}/{t['steps_possible']}"
         )
     if a.status:
-        print(STATUS_HEADER)
-        print("\n".join(rows))
+        if rows or not task_rows:
+            print(STATUS_HEADER)
+            print("\n".join(rows))
+        if task_rows:
+            from .task import TASK_STATUS_HEADER
+
+            if rows:
+                print()
+            print(TASK_STATUS_HEADER)
+            print("\n".join(task_rows))
 
 
 if __name__ == "__main__":

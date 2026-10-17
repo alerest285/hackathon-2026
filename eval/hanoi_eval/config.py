@@ -52,6 +52,16 @@ class RobotSettings:
 
 
 @dataclass
+class TaskSettings:
+    """One instruction scored over attempts (run_task.py): steps are its countable sub-goals, 0 = not counted."""
+
+    instruction: str = ""
+    steps: int = 0
+    attempts: int = 10
+    attempt_timeout_s: float = 180.0
+
+
+@dataclass
 class RecordSettings:
     """Live attempts as LeRobotDataset episodes (hanoi_eval/dataset.py)."""
 
@@ -115,6 +125,7 @@ class HanoiConfig:
     video: VideoSettings = field(default_factory=VideoSettings)
     sanity: SanitySettings = field(default_factory=SanitySettings)
     record: RecordSettings = field(default_factory=RecordSettings)
+    task: TaskSettings = field(default_factory=TaskSettings)
 
     @property
     def n(self) -> int:
@@ -141,6 +152,7 @@ SECTIONS = {
     "video": VideoSettings,
     "sanity": SanitySettings,
     "record": RecordSettings,
+    "task": TaskSettings,
 }
 
 CHOICES = {
@@ -308,6 +320,9 @@ def check(cfg: HanoiConfig) -> list[str]:
         problems.append("sanity.repeats must be >= 1")
     if not cfg.server.url.startswith(("ws://", "wss://")):
         problems.append("server.url must start with ws:// or wss://")
+    t = cfg.task
+    if t.steps < 0 or t.attempts < 1 or t.attempt_timeout_s <= 0:
+        problems.append("task.steps must be >= 0, task.attempts >= 1 and task.attempt_timeout_s > 0")
     r = cfg.record
     if r.lerobot and (r.repo_id.count("/") != 1 or not all(r.repo_id.split("/")) or not r.root.strip()):
         problems.append("record.repo_id must be <user>/<name> and record.root a directory when record.lerobot is on")
