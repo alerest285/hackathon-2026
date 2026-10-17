@@ -1,8 +1,8 @@
 ---
 id: T13
 title: One-command first boot + SO-101 smoke test
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - infra/gpu/smoke-so101.sh
