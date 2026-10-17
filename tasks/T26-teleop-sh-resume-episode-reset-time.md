@@ -1,7 +1,7 @@
 ---
 id: T26
 title: teleop.sh: resume + episode/reset time
-status: doing
+status: done
 owner: alerest285
 depends: 
 paths:
@@ -23,3 +23,4 @@ TODO: one or two sentences.
 ## Notes and handoffs (append, newest last)
 
 - 2026-10-17T19:41Z · alerest285 · done: resume + timing flags
+- 2026-10-17T19:41Z · alerest285 · done: bash 3.2 fix
