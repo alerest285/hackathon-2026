@@ -1,0 +1,35 @@
+{
+  "source_repo_id": "erh-hack-team-ale/so100_pick_cube_20261017_185713",
+  "source_revision": "8dac3040f85d5fdbc666a22a85a48762ba03d3f2",
+  "fps": 30,
+  "settle_frames": 15,
+  "tasks": {
+    "orange": "Put the orange object at the left of the black line",
+    "green": "Put the green object at the right of the black line"
+  },
+  "lengths": [
+    1234, 793, 750, 724, 713, 663, 575, 594, 687, 599, 568, 683, 678, 632, 530, 631, 529, 541,
+    898, 553, 570, 504, 545, 509, 497, 488, 559, 482, 476, 533, 473, 538, 539, 527, 719, 592,
+    571, 762, 600, 501, 686, 743, 543, 627, 645, 668, 888, 758, 566, 538, 568, 690, 616, 645,
+    657, 762, 537, 712, 671, 740, 737, 629, 511, 696, 577, 580, 552, 519, 537, 448, 863, 747,
+    658, 733, 645, 753, 576, 795, 523, 754, 734, 535
+  ],
+  "release_frames": [
+    535, 382, 340, 328, 389, 338, 291, 305, 345, 280, 267, 272, 291, 258, 289, 354, 275, 315,
+    324, 282, 294, 223, 283, 282, 242, 232, 254, 245, 249, 287, 242, 249, 271, 224, 383, 291,
+    252, 286, 307, 273, 325, 287, 301, 351, 303, 307, 358, 378, 277, 270, 241, 305, 268, 300,
+    240, 393, 239, 326, 287, 362, 383, 293, 252, 344, 270, 330, 277, 241, 261, 234, 301, 360,
+    360, 390, 273, 347, 289, 396, 300, 339, 325, 342
+  ],
+  "first_task": [
+    "green", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange",
+    "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange",
+    "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange",
+    "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange",
+    "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange",
+    "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange",
+    "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange",
+    "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange", "orange",
+    "orange", "orange"
+  ]
+}
