@@ -42,8 +42,8 @@ and test a checkpoint on the arm before recording more: the probe gives the hour
 
 Every save holds `pretrained_model` (raw) and `pretrained_model_ema`. Try the raw adapter first: EMA 0.999 still carries
 about 8 % of the starting weights after 2,500 updates, and BFL calls EMA on SO-101 "mixed". Then the EMA one under the
-same protocol. The logged `eval_loss` (64 held-out samples, 10 % of episodes per task) uses the EMA weights at this
-pin (`ema.use_for_eval: True` in the run log). It is a sanity signal, not a ranking: offline error does not establish task success. First checkpoint to self-test in the
+same protocol. The logged `eval_loss` (64 held-out samples, 10 % of episodes per task) uses the RAW weights at this
+pin (lerobot_train.py:987-1007); `ema.use_for_eval` only affects simulator rollouts (:1061), which we do not run. It is a sanity signal, not a ranking: offline error does not establish task success. First checkpoint to self-test in the
 server: `serve.sh --engine lerobot --adapter <run>/checkpoints/000500/pretrained_model --selftest --n 5`.
 
 ## Resume
