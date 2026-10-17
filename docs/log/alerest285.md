@@ -18,3 +18,4 @@ Append-only, newest at the bottom. One line per event.
 - 2026-10-17T13:09Z alerest285 [T02] (claude-code) release (blocked): only the on-demand P quota (case open) is left; plan PAID, budget live
 - 2026-10-17T13:09Z alerest285 [T03] (claude-code) release (todo): on-demand default, full launch dry run passes; start with infra/aws/up.sh once quota >= 16
 - 2026-10-17T13:09Z alerest285 [T12] (claude-code) release (done): project.md says on-demand, decision 07
+- 2026-10-17T13:11Z alerest285 [T13] (claude-code) first-boot.sh + smoke-so101.sh written (syntax-checked); waiting on on-demand P quota (background watcher) and Ale's HF token

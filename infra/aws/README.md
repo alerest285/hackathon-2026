@@ -35,6 +35,7 @@ aws service-quotas list-requested-service-quota-change-history --service-code ec
 
 | Command | Effect |
 |---|---|
+| `infra/aws/first-boot.sh` | **The first time:** up → wait for ssh → copy your HF token → clone + bootstrap → SO-101 smoke (load, latency, VRAM) → stop. `--droid` adds the DROID check, `--keep` leaves it running. Log in `outputs/` |
 | `infra/aws/up.sh` | Starts the stopped instance, or launches a new one in the cheapest zone. Prints host + price |
 | `infra/aws/ssh.sh` | ssh as `ubuntu`, with localhost:8000 forwarded to the policy server. Teammates without AWS access: `HACK_GPU_HOST=<host> infra/aws/ssh.sh` |
 | `infra/aws/down.sh` | Stops compute billing. The disk stays, ~$0.03/h |
