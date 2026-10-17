@@ -92,3 +92,23 @@ It does not touch `joint_mapping.json`.
 The two maps agree within about 1° on pan, lift and wrist_flex. Elbow differs by 6.3°: T21 anchored a hand-folded rest
 at the mechanical stop, while the new map anchors teleop starts, which sit about 6° short of the stop, as kitchen's
 do. wrist_roll differs by 7.1°: Saad's start roll varies (IQR 10.9°).
+
+## 5. Reference-pose check on the arm (~20:40Z, `so100_ref_poses.py`)
+
+Saad held the old calibration's zero and rotated poses (torque off). Readings, ours: zero `[8.1, 0.3, 6.9, 1.0, 94.5, 2.4]`,
+rotated `[95.0, −6.3, 13.8, 84.0, 2.3, 85.7]`. Under the phys map (old degrees, target zero 0 / rotated +90):
+
+| joint | zero | rotated | result |
+|---|---:|---:|---|
+| pan (base was turned too) | 2.2 | 89.1 | sign +1 and offset confirmed within ~2° |
+| shoulder_lift | 80.7 | 87.3 | rotated pose confirms the map (−2.7°). The zero pose is unusable: lift and elbow barely moved (−6.6/+6.9), so the arm was in an L in both poses, not stretched out |
+| elbow_flex | 87.0 | 93.9 | rotated pose confirms the map (+3.9°) |
+| wrist_flex | 1.4 | 84.3 | sign +1 and offset confirmed (+2.2°) |
+| wrist_roll | −170.8 | −78.7 | **sign −1 confirmed, but the offset was off by 170°**. The two poses agree on offset +93.4 (2.2° apart) |
+| gripper | 2.4 closed | 85.7 fully open | old convention 0..100; identity kept |
+
+wrist_roll is a free joint, so the rest-pose anchor (Saad's teleop start vs kitchen's) does not fix its physical
+orientation. Saad's gripper rests about 170° rolled from kitchen's. The T21 map had the same rest anchor, so in live
+run 1 the model probably saw the gripper roll roughly upside down. New map: `~/hackathon-data/maps/so100_refpose_map.json` (phys map +
+wrist_roll offset 93.39; limits unchanged, `so100_phys_limits.json`). Under it, Saad's wrist_roll q01..q99 sits at
+old 17.8..134.1, mostly above kitchen's q99 (60.2): his gripper is physically rolled differently from the training data.
