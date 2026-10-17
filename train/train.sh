@@ -3,7 +3,7 @@
 # after train/setup.sh, with train/ and infra/gpu/so101/ synced to the host and the dataset from train/prepare.py
 # rsynced to /workspace/datasets/<name>.
 #
-#   bash train/train.sh probe  <name> [--batch 2|4|8]   PERFORMANCE ONLY, saves nothing: s/step, data wait, VRAM, ETA
+#   bash train/train.sh probe  <name> [--batch 2|4|8]   PERFORMANCE ONLY, saves nothing: s/step, data/prep wait, VRAM, ETA
 #   bash train/train.sh smoke  <name> [--batch B]       save -> resume -> load raw + EMA adapters in the server; required
 #                                                        once per setup before a full run
 #   bash train/train.sh run    <name> [--batch B] [--updates 2500] [--effective 8] [--tag v1]   full run in tmux
@@ -16,15 +16,18 @@
 # training starts and never moved: the dataset's prepare_manifest.json, the joint maps it was converted with, and
 # run.json (dataset, manifest sha256, stage path). Resume and serving read it there.
 # Refuses to start while another process uses the GPU (live serving needs its latency) unless --share.
+# Options: --workers N (loader processes; default 3 for probe/smoke, 6 for run: the old pod measured data_s 0.004 at
+# 0.9 s/microstep, and every spawn worker re-imports the venv), --wandb ENTITY/PROJECT (needs WANDB_API_KEY in the env).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 mode="${1:-}"; name="${2:-}"; shift 2 || true
-batch=2 updates=2500 effective=8 tag="" share=0
+batch=2 updates=2500 effective=8 tag="" share=0 workers="" wandb=""
 while [ $# -gt 0 ]; do case "$1" in
   --batch) batch="$2"; shift 2 ;; --updates) updates="$2"; shift 2 ;; --effective) effective="$2"; shift 2 ;;
   --tag) tag="$2"; shift 2 ;; --share) share=1; shift ;;
+  --workers) workers="$2"; shift 2 ;; --wandb) wandb="$2"; shift 2 ;;
   *) echo "unknown option $1" >&2; exit 2 ;; esac; done
-usage() { sed -n 2,19p "$0"; exit 2; }
+usage() { sed -n 2,22p "$0"; exit 2; }
 case "$mode" in probe|smoke|run|resume) ;; *) usage ;; esac
 [ -n "$name" ] || usage
 [ $((effective % batch)) -eq 0 ] || { echo "--effective $effective is not a multiple of --batch $batch" >&2; exit 2; }
@@ -56,14 +59,24 @@ stage_dataset() {  # <dataset name> [<fixed stage dir>] -> prints the staged pat
   mkdir -p "$stage"; rsync -a --delete "$src/" "$stage/" >&2
   echo "$stage"
 }
-loader_workers() {
+loader_workers() {  # <wanted>: capped at CPUs - 2
   local cpus quota; cpus=$(python3 -c 'import os;print(len(os.sched_getaffinity(0)))')
   quota=$(awk '{ if ($1=="max") print 0; else print int($1/$2) }' /sys/fs/cgroup/cpu.max 2>/dev/null || echo 0)
   [ "$quota" -gt 0 ] && [ "$quota" -lt "$cpus" ] && cpus=$quota
-  echo $(( cpus > 18 ? 16 : (cpus > 4 ? cpus - 2 : 2) ))
+  local cap=$(( cpus > 3 ? cpus - 2 : 1 ))
+  echo $(( $1 < cap ? $1 : cap ))
+}
+# Spawn workers each re-import torch + lerobot; from the network volume that took ~30 s per worker (19:44Z). One
+# parallel read of the venv puts it in the page cache first, so the imports read RAM.
+warm_venv() {
+  local t0; t0=$(date +%s)
+  find "$LEROBOT_DIR/.venv" "$LEROBOT_DIR/src" -type f \( -name '*.py' -o -name '*.so*' -o -name '*.pyc' \) -print0 \
+    | xargs -0 -P 16 -n 200 cat > /dev/null 2>&1 || true
+  echo "venv warmed into page cache in $(( $(date +%s) - t0 )) s"
 }
 in_tmux() {  # <session> <cmd file> <log>: EXIT carries the trainer's own status, not tee's
-  tmux new-session -d -s "$1" "bash $2 2>&1 | tee $3; echo EXIT \${PIPESTATUS[0]} >> $3"
+  local envs=(); [ -n "${WANDB_API_KEY:-}" ] && envs=(-e "WANDB_API_KEY=$WANDB_API_KEY")
+  tmux new-session -d "${envs[@]}" -s "$1" "bash $2 2>&1 | tee $3; echo EXIT \${PIPESTATUS[0]} >> $3"
   echo "tmux attach -t $1   (detach: Ctrl-b d).  Follow: tail -f $3 | grep -E 'step|loss|Error|EXIT'"
 }
 
@@ -96,7 +109,9 @@ src="/workspace/datasets/$name"
 gpu_free_or_exit
 staged=$(stage_dataset "$name")
 echo "dataset staged at $staged ($(du -sh "$staged" | cut -f1)); $(python3 -c "import json;m=json.load(open('$src/prepare_manifest.json'));print(m['episodes'],'episodes,',m['minutes'],'min')")"
-workers=$(loader_workers)
+[ -n "$workers" ] || { [ "$mode" = run ] && workers=6 || workers=3; }
+workers=$(loader_workers "$workers")
+warm_venv
 
 stamp=$(date -u +%m%d-%H%M%S)-$(od -An -N2 -tx2 /dev/urandom | tr -d ' ')
 run="${name}${tag:+-$tag}-b${batch}x${accum}-${stamp}"
@@ -118,6 +133,10 @@ args=(-m lerobot.scripts.lerobot_train --config_path="$ROOT/train/lora.json"
   --steps="$steps" --save_freq="$save" --eval_steps="$save" --log_freq="$logf"
   --num_workers="$workers" --output_dir="$out")
 [ "$mode" = probe ] && args+=(--save_checkpoint=false)
+if [ -n "$wandb" ]; then
+  [ -n "${WANDB_API_KEY:-}" ] || grep -qs api.wandb.ai ~/.netrc || { echo "--wandb needs WANDB_API_KEY in the env (or wandb login)" >&2; exit 2; }
+  args+=(--wandb.enable=true --wandb.entity="${wandb%%/*}" --wandb.project="${wandb#*/}" --job_name="$run")
+fi
 cat > "$cmd" <<EOF
 # $(date -u +%FT%TZ) $(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo no-git) mode=$mode batch=$batch accum=$accum effective=$effective workers=$workers
 cd "$LEROBOT_DIR" && $ENV_PREFIX $PY ${args[*]}
@@ -155,19 +174,24 @@ echo; echo "=== $mode $run: exit $rc, wall $(( $(date +%s) - t0 )) s, peak GPU m
 
 if [ "$mode" = probe ]; then
   echo "(performance only: nothing was saved; run smoke once before a full run)"
-  grep -E "updt_s|data_s" "$log" | tail -3
+  grep -E "updt_s" "$log" | tail -3
   "$PY" - "$log" "$updates" "$accum" <<'PY'
 import re, sys
 log, updates, accum = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-rows = [(float(u), float(d)) for u, d in re.findall(r"updt_s:([\d.]+).*?data_s:([\d.]+)", open(log).read())]
-if len(rows) < 2:
+def field(line, key):  # pinned trainer 146d847 prints "... data_s:X prep_s:Y updt_s:Z"; any order, any subset
+    m = re.search(rf"\b{key}:([\d.]+)", line)
+    return float(m.group(1)) if m else 0.0
+lines = [l for l in open(log) if "updt_s:" in l]
+if len(lines) < 2:
     sys.exit("no step timings parsed: read the log above")
-u = sorted(r[0] for r in rows[1:])[len(rows[1:]) // 2]   # median, first log line includes warm-up
-d = sorted(r[1] for r in rows[1:])[len(rows[1:]) // 2]
-hours = (u + d) * updates * accum / 3600
-print(f"median update {u:.2f} s + data wait {d:.2f} s per microstep -> {updates} updates = {hours:.1f} h, about ${hours * 3.99:.0f} at $3.99/h")
-if d > 0.2 * u:
-    print("data loading is a bottleneck: more workers, or a smaller dataset video (see README)")
+rows = [(field(l, "updt_s"), field(l, "data_s"), field(l, "prep_s")) for l in lines[1:]]  # first line = warm-up
+med = lambda i: sorted(r[i] for r in rows)[len(rows) // 2]
+u, d, p = med(0), med(1), med(2)
+hours = (u + d + p) * updates * accum / 3600
+print(f"median per microstep: update {u:.2f} s + data {d:.3f} s + prep {p:.3f} s -> {updates} updates = {hours:.1f} h,"
+      f" about ${hours * 3.99:.0f} at $3.99/h (plus startup)")
+if d + p > 0.2 * u:
+    print("loading/preprocessing is a bottleneck: --workers up, or a smaller dataset video (see README)")
 PY
   exit 0
 fi

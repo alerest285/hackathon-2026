@@ -83,7 +83,7 @@ def test_prepare_maps_filters_and_merges(tmp_path):
 
     out = tmp_path / "lora_v1"
     assert prepare.main(["--teleop", f"{a}={tmp_path / 'map_a.json'}", "--source", f"{b}={tmp_path / 'map_b.json'}",
-                         "--out", str(out), "--hanoi-only"]) == 0
+                         "--out", str(out), "--hanoi-only", "--eval-split", "0"]) == 0
 
     m = json.loads((out / "prepare_manifest.json").read_text())
     assert m["episodes"] == 2 and m["frames"] == 60 + 55
@@ -114,7 +114,7 @@ def test_short_video_is_dropped(tmp_path):
     import pandas as pd
 
     a = tmp_path / "demos"
-    make_dataset(a, [(GOOD, 60), (GOOD, 60)], seed=2)
+    make_dataset(a, [(GOOD, 60), (GOOD, 60), (GOOD, 60)], seed=2)
     # Simulate the encoder shortfall: episode 1's wrist span claims fewer frames than its rows.
     p = next((a / "meta" / "episodes").glob("*/*.parquet"))
     df = pd.read_parquet(p)
@@ -125,7 +125,7 @@ def test_short_video_is_dropped(tmp_path):
     out = tmp_path / "lora"
     assert prepare.main(["--teleop", str(a), "--mapping", str(tmp_path / "map.json"), "--out", str(out)]) == 0
     m = json.loads((out / "prepare_manifest.json").read_text())
-    assert m["episodes"] == 1 and "wrist video spans" in m["sources"][0]["dropped"]["1"]
+    assert m["episodes"] == 2 and "wrist video spans" in m["sources"][0]["dropped"]["1"]
 
 
 def test_refuses_existing_out(tmp_path):
@@ -145,7 +145,8 @@ def test_runs_fail_closed(tmp_path):
     (b / "console_episodes.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
     write_map(tmp_path / "map.json", "arm", 1.0)
     out = tmp_path / "lora"
-    assert prepare.main(["--source", str(b), "--mapping", str(tmp_path / "map.json"), "--out", str(out)]) == 0
+    assert prepare.main(["--source", str(b), "--mapping", str(tmp_path / "map.json"), "--out", str(out),
+                         "--eval-split", "0"]) == 0
     m = json.loads((out / "prepare_manifest.json").read_text())
     d = m["sources"][0]["dropped"]
     assert m["episodes"] == 1 and "run_mode/valid" in d["1"] and "no sidecar row" in d["2"]
@@ -158,3 +159,23 @@ def test_source_without_sidecar_must_be_declared_teleop(tmp_path):
     write_map(tmp_path / "map.json", "arm", 1.0)
     with pytest.raises(SystemExit, match="--teleop"):
         prepare.main(["--source", str(a), "--mapping", str(tmp_path / "map.json"), "--out", str(tmp_path / "o")])
+
+
+def test_single_episode_task_is_refused(tmp_path):
+    """Codex 15:44Z: one episode per task -> ceil(0.1 * 1) = 1 held out, nothing left to train on."""
+    a = tmp_path / "demos"
+    make_dataset(a, [(GOOD, 55), (GOOD2, 55), (GOOD2, 55)], seed=5)
+    write_map(tmp_path / "map.json", "arm", 1.0)
+    with pytest.raises(SystemExit, match="no training episode"):
+        prepare.main(["--teleop", str(a), "--mapping", str(tmp_path / "map.json"), "--out", str(tmp_path / "o")])
+    assert not (tmp_path / "o").exists()
+
+
+def test_prepared_output_is_not_a_source(tmp_path):
+    a = tmp_path / "demos"
+    make_dataset(a, [(GOOD, 55), (GOOD, 55)], seed=6)
+    write_map(tmp_path / "map.json", "arm", 1.0)
+    out = tmp_path / "lora"
+    assert prepare.main(["--teleop", str(a), "--mapping", str(tmp_path / "map.json"), "--out", str(out)]) == 0
+    with pytest.raises(SystemExit, match="double-map"):
+        prepare.main(["--teleop", str(out), "--mapping", str(tmp_path / "map.json"), "--out", str(tmp_path / "again")])

@@ -25,6 +25,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import shutil
 import sys
 import tempfile
@@ -252,8 +253,8 @@ def main(argv=None) -> int:
     p.add_argument("--hanoi-only", action="store_true",
                    help="keep only episodes whose task is a prompt eval/config/hanoi.toml can issue")
     p.add_argument("--allow-dry", action="store_true", help="keep dry runs (never for training: the arm did not move)")
-    p.add_argument("--no-map", action="store_true",
-                   help="the sources are already in model space (never for our raw recordings)")
+    p.add_argument("--eval-split", type=float, default=0.1,
+                   help="must match train/lora.json: LeRobot holds out the last ceil(n * split) episodes of each task")
     a = p.parse_args(argv)
 
     from lerobot.datasets.dataset_tools import delete_episodes, merge_datasets
@@ -273,7 +274,10 @@ def main(argv=None) -> int:
         if not a.source and not a.teleop:
             raise SystemExit("give at least one --source or --teleop")
         for n, (text, teleop) in enumerate([(t, False) for t in a.source] + [(t, True) for t in a.teleop]):
-            src, mp = (Path(text).expanduser(), None) if a.no_map else parse_source(text, default_map)
+            src, mp = parse_source(text, default_map)
+            if (src / "prepare_manifest.json").exists():
+                raise SystemExit(f"{src} is already prepared (model space): mapping it again would double-map. "
+                                 "Use the raw recordings as sources.")
             ds = LeRobotDataset(f"local/{src.name}", root=src)
             check_features(ds.meta, src)
             drop, why, kept = select_episodes(ds, src, a.keep, a.min_frames, prompts, a.allow_dry, teleop)
@@ -288,7 +292,7 @@ def main(argv=None) -> int:
                 shutil.copytree(src, dst, ignore=shutil.ignore_patterns(*SIDECARS))
             entry = {"root": str(src), "kind": "teleop" if teleop else "run", "episodes": ds.meta.total_episodes, "kept": ds.meta.total_episodes - len(drop),
                      "kept_per_task": dict(kept), "dropped": {str(k): v for k, v in why.items()}}
-            if mp is not None:
+            if True:
                 jm = mm.JointMap.load(mp)
                 vals = to_model_space(dst, jm)
                 for k in MAPPED:
@@ -305,6 +309,14 @@ def main(argv=None) -> int:
 
         if not parts:
             raise SystemExit("nothing to train on: every episode was dropped (see the reasons above)")
+        per_task = Counter()
+        for e in manifest_sources:
+            per_task.update(e.get("kept_per_task", {}))
+        starved = {t: n for t, n in per_task.items() if n - math.ceil(n * a.eval_split) < 1}
+        if starved:
+            raise SystemExit("these tasks would have no training episode after LeRobot's per-task holdout "
+                             f"(ceil(n * {a.eval_split})): " + "; ".join(f"{t!r}: {n}" for t, n in starved.items())
+                             + ". Record at least 2 episodes per task.")
         if len(parts) == 1:
             shutil.move(str(parts[0].root), out)
             merged = LeRobotDataset(repo_id, root=out)
