@@ -20,7 +20,8 @@ plus `policy.reset()`.
   Goal: the same tower on the right place. 7 moves.
 - **Chaining:** our sequencer solves the puzzle and issues one instruction per move. FLUX runs closed-loop
   on that instruction until the step ends, the policy is reset, and the next instruction starts. FLUX makes
-  every motion; the sequencer only chooses text.
+  every motion; the sequencer only chooses text. (Refined by decision 06: between steps the queued actions are
+  dropped and the history is kept; the full reset is at the episode start and after an intervention.)
 - **Physical set:** fixed at the venue: rings on pegs, or blocks on three marked spots. Piece and place names
   live in a config file, never in code. Default prompt: `pick up the {piece} and place it on the {place}`,
   e.g. "pick up the small red disk and place it on the right peg". The sanity runs below may change the wording.
