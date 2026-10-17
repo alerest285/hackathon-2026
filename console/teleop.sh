@@ -34,7 +34,7 @@ case "$mode" in
           root="$HOME/hackathon-data/$dsname"; resume=()
           # lerobot-record refuses to create into an existing root; append to it instead.
           [ -f "$root/meta/info.json" ] && { resume=(--resume=true); echo "resuming $root"; }
-          exec uv run --python 3.13 --with "lerobot[dataset]==0.6.1" lerobot-record "${common[@]}" "${resume[@]}" \
+          exec uv run --python 3.13 --with "lerobot[dataset]==0.6.1" lerobot-record "${common[@]}" ${resume[@]+"${resume[@]}"} \
             --dataset.repo_id="alerest285/$dsname" --dataset.root="$root" \
             --dataset.episode_time_s="$episode_s" --dataset.reset_time_s="$reset_s" \
             --dataset.single_task="$task" --dataset.num_episodes="$episodes" --dataset.fps=30 \
