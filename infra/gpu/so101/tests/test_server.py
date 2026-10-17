@@ -414,3 +414,11 @@ def test_flux_action_compile_falls_back_to_eager_when_the_compiled_warmup_fails(
     assert engine.compiled is False and dit.forward() == "eager"
     assert engine.meta["compile"] is False and "dynamo failed" in engine.meta["compile_failed"]
     assert engine.warm and engine.warm_tasks == [TASK] and engine.first_plan_ms is not None
+
+
+def test_pin_revision_leaves_local_snapshot_paths_alone():
+    """lerobot-train writes absolute snapshot paths into an adapter's config (T23), sometimes with a :file part."""
+    rev = "62878e2925e59b7a89ec14463ce89932624c490d"
+    for spec in ("/workspace/hf/hub/models--black-forest-labs--flux-3-action-base/snapshots/62878e29:vae",
+                 "~/hf/snapshots/62878e29/text_encoder", "./weights:vae"):
+        assert pin_revision(spec, rev) == (spec, "")

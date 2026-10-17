@@ -70,9 +70,11 @@ def pin_revision(spec: str | None, revision: str | None, force: bool = False) ->
     The checkpoint config's own pin wins, as in flux-action and LeRobot: a spec without a revision gets
     ``@revision``, a spec pinned to the same revision stays, and a spec pinned to a different one raises
     ValueError unless ``force``, which loads ``revision`` instead. Local paths, empty specs and an empty
-    pin pass through unchanged.
+    pin pass through unchanged. A spec that starts like a path (``/``, ``~``, ``.``) is local even when it carries
+    a ``:file`` part that makes os.path.exists false: lerobot-train writes absolute snapshot paths into an
+    adapter's config (T23), and a Hub repo id never starts that way.
     """
-    if not spec or not revision or os.path.exists(spec):
+    if not spec or not revision or os.path.exists(spec) or spec.startswith(("/", "~", ".")):
         return spec, ""
     body, _, current = spec.partition("@")
     if current == revision:
