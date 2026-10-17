@@ -42,8 +42,8 @@ and test a checkpoint on the arm before recording more: the probe gives the hour
 
 Every save holds `pretrained_model` (raw) and `pretrained_model_ema`. Try the raw adapter first: EMA 0.999 still carries
 about 8 % of the starting weights after 2,500 updates, and BFL calls EMA on SO-101 "mixed". Then the EMA one under the
-same protocol. The offline validation loss (64 held-out samples, 10 % of episodes per task, raw weights only) is a
-sanity signal, not a ranking: offline error does not establish task success. First checkpoint to self-test in the
+same protocol. The logged `eval_loss` (64 held-out samples, 10 % of episodes per task) uses the EMA weights at this
+pin (`ema.use_for_eval: True` in the run log). It is a sanity signal, not a ranking: offline error does not establish task success. First checkpoint to self-test in the
 server: `serve.sh --engine lerobot --adapter <run>/checkpoints/000500/pretrained_model --selftest --n 5`.
 
 ## Resume
@@ -65,7 +65,9 @@ Serve an adapter only behind the map in its provenance (decision 10).
 2. More loader workers, if the probe prints that data loading is a bottleneck. Each sample decodes 50 frames per camera
    (kept uint8 until the policy packs them); the dataset is staged on `/dev/shm` because `/workspace` is a network
    volume. If AV1 decoding fails or crawls with torchcodec, add `--dataset.video_backend=pyav` to the `.cmd` file.
-3. Fewer updates (`--updates 1250`) for a first adapter on a small dataset, then a full run on the one that works.
+3. Evaluation costs about 110 s the first time (its loader starts) and about 20 s after that, so roughly 8 min per
+   full run (measured 17.10, smoke on wog1l8ijpl3jp5). Not worth tuning.
+4. Fewer updates (`--updates 1250`) for a first adapter on a small dataset, then a full run on the one that works.
 
 ## Tests
 
