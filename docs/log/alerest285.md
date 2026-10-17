@@ -51,3 +51,4 @@ Append-only, newest at the bottom. One line per event.
 - 2026-10-17T15:42Z alerest285 [T10] (claude-code-hanoi) serve.sh falls back to /workspace/{flux-action,lerobot-flux3} when the home env is missing (train/setup.sh builds /workspace/lerobot-flux3); LoRA cross-check filed as docs/research/2026-10-17-lora-plan-crosscheck.md
 - 2026-10-17T19:41Z alerest285 [T26] (claude-code) release (done): resume + timing flags
 - 2026-10-17T19:41Z alerest285 [T26] (claude-code) release (done): bash 3.2 fix
+- 2026-10-17T19:41Z alerest285 [T24] (claude-code) guidance A/B (hungho, 30 frames, mapped): 3/3 lift corr 0.84 err 15.8, plan 579 ms eager; 1/1 lift corr 0.18 err 15.5, plan 347 ms; other joints similar -> keep 3/3 + compile. Pod rmhs4cu2cejemv EXITED ~19:33Z: Runpod balance 0 (start -> 402).
