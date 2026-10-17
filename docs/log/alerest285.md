@@ -24,3 +24,4 @@ Append-only, newest at the bottom. One line per event.
 - 2026-10-17T13:39Z alerest285 [T13] (claude-code) FIRST INFERENCE PASS on Runpod pod rmhs4cu2cejemv (H100 80GB, EU-FR-1, $3.99/h, ssh root@<pod-host> -p <ssh-port>): flux-3-action-so101 @0713a7a, synthetic obs, eager: load 123 s, first plan 1.94 s, then p50 0.58 s / max 0.61 s per 42x6 chunk, peak GPU 25.9 GB. Weights in /workspace/hf (so101 13 GB + base encoders).
 - 2026-10-17T13:39Z alerest285 [T13] (claude-code) release (done): SO-101 smoke PASS on Runpod H100: 0.58 s/chunk eager, 25.9 GB, load 123 s
 - 2026-10-17T13:40Z alerest285 [T03] (claude-code) release (todo): compute is a Runpod H100 for now (status 2026-10-17-1545); AWS launch still waits on quota
+- 2026-10-17T13:41Z alerest285 [T14] (claude-code) repo made private; README rewritten for the team (pod access, status, join steps); AGENTS.md + project.md updated; decision 08 Runpod

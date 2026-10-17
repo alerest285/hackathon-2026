@@ -14,7 +14,7 @@ first, meaning the released checkpoints with no fine-tuning. Fine-tuning comes l
 
 | # | Milestone | Done when |
 |---|---|---|
-| 1 | **Inference infra** | `flux-3-action-so101` runs on our AWS H100 and returns `(1, 42, 6)` actions for a recorded or synthetic SO-101 observation. Latency and VRAM are logged. (The DROID smoke test, T04, is an optional environment check.) |
+| 1 | **Inference infra** | `flux-3-action-so101` runs on our H100 and returns `(1, 42, 6)` actions for a recorded or synthetic SO-101 observation. Latency and VRAM are logged. (The DROID smoke test, T04, is an optional environment check.) |
 | 2 | **Served policy** | Our SO-101 server on the GPU host returns action chunks to the Mac that drives the arm, with the round trip logged and split into network and server time. |
 | 3 | **Zero-shot task** | The 3-disk Tower of Hanoi (decision 05) runs closed-loop on the SO-101 for 10 strict episodes, with steps completed counted and videos saved. |
 | 4 | Stretch | LoRA on SO-101 with Hanoi demonstrations, compared with milestone 3 under the same protocol. |
@@ -22,13 +22,13 @@ first, meaning the released checkpoints with no fine-tuning. Fine-tuning comes l
 ## Open questions (resolve as decision records)
 
 1. ~~Which embodiment and task for milestone 3?~~ Settled: the physical SO-101 and a 3-disk Tower of Hanoi, one move per instruction. Prompts, success rule and N = 10 are in decision 05.
-2. **VRAM and latency.** Not published. We measure them on our H100 in T04 (`report.json` records GPU memory).
+2. ~~VRAM and latency~~ measured 17.10: 25.9 GB, 0.58 s per chunk eager, 123 s load (status 2026-10-17-1545).
 
 ## Constraints
 
-- **Compute is ours to provide**: one AWS `p5.4xlarge` (1× H100 80 GB) **on-demand** in **eu-north-1**, $7.36/h, **$150 total**,
-  inference only (decisions 02, 04, 07). That is about **20 GPU-hours**, so stop the box between sessions.
-  Spot is blocked on our project type.
+- **Compute is ours to provide**, and the hackathon reimburses AWS. **Now:** one Runpod H100 80 GB in Paris, $3.99/h,
+  running continuously (decision 08). **Official route:** an AWS `p5.4xlarge` on-demand in eu-north-1 at $7.36/h (decisions 04 and 07),
+  which waits on AWS approving the GPU quota.
 
 ## Out of scope for now
 

@@ -112,7 +112,7 @@ anything a teammate would otherwise rediscover.
 
 - Editing, reformatting or "cleaning up" files in someone else's lock.
 - Deleting another member's log lines, task notes or decisions. Correct them with a new line instead.
-- Pushing secrets, model weights or datasets. The repo is **public**.
+- Pushing secrets, model weights or datasets. The repo is private (members only), but still never commit keys or tokens.
 - Running a paid GPU without a log line that records the start, the cost per hour and the stop.
 
 <!-- BEGIN AWS Agent Toolkit rules -->
