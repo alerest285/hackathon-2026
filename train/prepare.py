@@ -68,6 +68,8 @@ def read_sidecar(root: Path) -> dict[int, dict]:
             for line in f.read_text().splitlines():
                 if line.strip():
                     d = json.loads(line)
+                    if d.get("episode_index") is None:  # e.g. discarded_too_short (4a8c483): no saved episode
+                        continue
                     i = int(d["episode_index"])
                     out[i] = {**out.get(i, {}), **d}  # merge both files; hanoi's verdict (read last) wins
     return out

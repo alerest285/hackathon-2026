@@ -76,6 +76,8 @@ def test_prepare_maps_filters_and_merges(tmp_path):
     side = [{"episode_index": 0, "verdict": "success", "run_mode": "live", "dropped_frames": 0, "encoder_dropped": {}, "valid": True},
             {"episode_index": 1, "verdict": "success", "run_mode": "dry", "dropped_frames": 0, "encoder_dropped": {}, "valid": False},
             {"episode_index": 2, "verdict": "fail", "run_mode": "live", "dropped_frames": 0, "encoder_dropped": {}, "valid": True}]
+    side.insert(1, {"episode_index": None, "task": GOOD2, "frames": 3, "verdict": "discarded_too_short",
+                    "requested_verdict": "success", "run_mode": "live"})  # recorder 4a8c483: not a saved episode
     (b / "console_episodes.jsonl").write_text("".join(json.dumps(s) + "\n" for s in side))
     # eval writes a second sidecar; it must merge, not replace (ep0 keeps run_mode live from the console file)
     (b / "hanoi_episodes.jsonl").write_text(json.dumps({"episode_index": 0, "verdict": "success", "interventions": 0}) + "\n")
