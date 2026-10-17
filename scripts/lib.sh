@@ -14,6 +14,10 @@ fi
 REMOTE="${HACK_REMOTE:-origin}"
 BRANCH="${HACK_BRANCH:-main}"
 LOCK_HOURS="${HACK_LOCK_HOURS:-3}"
+# A stalled HTTPS transfer to GitHub must fail, not hang the agent forever (seen 18.10: a fetch+push hung 15 min).
+# Below 1 KB/s for 30 s git aborts; the callers' retry loops then take over.
+export GIT_HTTP_LOW_SPEED_LIMIT="${GIT_HTTP_LOW_SPEED_LIMIT:-1000}" GIT_HTTP_LOW_SPEED_TIME="${GIT_HTTP_LOW_SPEED_TIME:-30}"
+export GIT_TERMINAL_PROMPT=0
 # Path globs travel through unquoted variables; never let the shell expand them.
 set -f
 
