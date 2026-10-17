@@ -11,7 +11,6 @@ All dataset calls happen on one writer thread: the control loop and camera threa
 """
 from __future__ import annotations
 
-import collections
 import json
 import logging
 import queue
@@ -57,8 +56,10 @@ class Recorder:
                                             robot_type=robot_type, use_videos=True, image_writer_threads=0,
                                             streaming_encoding=True, encoder_threads=2)
         self.repo_id, self.fps, self.run_mode = repo_id, fps, run_mode  # run_mode: live | dry | fake
-        self.q: queue.Queue = queue.Queue(maxsize=600)  # frames only
-        self.ctrl: collections.deque = collections.deque()  # save/discard/close: appended without ever blocking
+        # One ORDERED queue for frames and controls, unbounded so put() never blocks the control thread. Frames beyond
+        # MAX_BACKLOG are dropped and counted; controls are never dropped, and apply exactly at their place in the order.
+        self.q: queue.Queue = queue.Queue()
+        self.backlog = 0
         self.low_disk = False  # set by the writer thread below MIN_FREE_MB; the console reads it
         self.frames = 0  # frames in the open episode
         self.task = None
@@ -77,24 +78,27 @@ class Recorder:
 
         return int(shutil.disk_usage(self.root).free / 1e6)
 
+    MAX_BACKLOG = 600
+
     def add(self, state, action, scene_bgr, wrist_bgr, task: str):
-        try:
-            self.q.put_nowait(("frame", np.asarray(state, np.float32).copy(), np.asarray(action, np.float32).copy(),
-                               scene_bgr, wrist_bgr, task))
-        except queue.Full:  # the writer fell behind: never block the control loop, but never hide it either
+        if self.backlog >= self.MAX_BACKLOG:  # the writer fell behind: never block the control loop, never hide it
             self.dropped += 1
-            self._ep_dropped += 1
+            self.q.put(("dropped",))
             self.last_error = f"writer behind: {self.dropped} frames dropped (episode marked in console_episodes.jsonl)"
+            return
+        self.backlog += 1
+        self.q.put(("frame", np.asarray(state, np.float32).copy(), np.asarray(action, np.float32).copy(),
+                    scene_bgr, wrist_bgr, task))
 
     def save(self, verdict: str | None = None):
-        self.ctrl.append(("save", verdict))
+        self.q.put(("save", verdict))
 
     def discard(self):
-        self.ctrl.append(("discard",))
+        self.q.put(("discard",))
 
     def close(self) -> str | None:
         """Save the open episode and finalize. Returns None on success, else the error (never claims success)."""
-        self.ctrl.append(("close",))
+        self.q.put(("close",))
         self._t.join(timeout=180)
         if self._t.is_alive():
             return "writer did not finish within 180 s; dataset may be incomplete"
@@ -118,47 +122,36 @@ class Recorder:
     def _run(self):
         n = 0
         while True:
+            item = self.q.get()
             try:
-                while self.ctrl:  # control has priority over queued frames
-                    item = self.ctrl.popleft()
-                    if item[0] == "save":
-                        self._drain(); self._save(item[1])
-                    elif item[0] == "discard":
-                        self._drain(drop=True)
-                        if self.frames:
-                            self.ds.clear_episode_buffer()
-                        self.frames, self.task, self._ep_dropped = 0, None, 0
-                    elif item[0] == "close":
-                        self._closing = True
-                        self._drain()
-                        if self.frames:
-                            self._save(None)
-                        self.ds.finalize()
-                        return
-                try:
-                    item = self.q.get(timeout=0.05)
-                except queue.Empty:
-                    continue
-                self._frame(item)
-                n += 1
-                if n % 300 == 0 and self.free_mb() < self.MIN_FREE_MB:
-                    self.low_disk = True
-                    self._drain(); self._save("stopped_low_disk")
+                kind = item[0]
+                if kind == "frame":
+                    self.backlog -= 1
+                    n += 1
+                    if n % 300 == 0 and self.free_mb() < self.MIN_FREE_MB:
+                        self.low_disk = True
+                        self._save("stopped_low_disk")
+                    self._frame(item)
+                elif kind == "dropped":
+                    self._ep_dropped += 1
+                elif kind == "save":
+                    self._save(item[1])
+                elif kind == "discard":
+                    if self.frames:
+                        self.ds.clear_episode_buffer()
+                    self.frames, self.task, self._ep_dropped = 0, None, 0
+                elif kind == "close":
+                    self._closing = True
+                    if self.frames:
+                        self._save(None)
+                    self.ds.finalize()
+                    return
             except Exception as e:  # keep the robot loop alive whatever the dataset does
                 self.last_error = f"{type(e).__name__}: {e}"
                 log.exception("recorder")
                 if self._closing:
                     self.close_error = self.last_error
                     return
-
-    def _drain(self, drop: bool = False):
-        while True:
-            try:
-                item = self.q.get_nowait()
-            except queue.Empty:
-                return
-            if not drop:
-                self._frame(item)
 
     def _frame(self, item):
         _, state, action, scene, wrist, task = item

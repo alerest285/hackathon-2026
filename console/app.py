@@ -178,9 +178,10 @@ class Console:
         """A stopped loop after start() is a latched fault (SafetyStop, bus errors): no restart from the page."""
         if self.started and not self.loop.running:
             err = getattr(self.loop, "error", None) or "control loop stopped"
-            if self.recording and self.recorder:
+            if self.recording:
                 self.recording = False
-                self.recorder.save("fault")
+                if self.recorder:
+                    self.recorder.save("fault")
             return err
         return None
 
