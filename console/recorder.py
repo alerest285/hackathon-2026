@@ -11,6 +11,7 @@ All dataset calls happen on one writer thread: the control loop and camera threa
 """
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import queue
@@ -38,7 +39,8 @@ def features() -> dict:
 
 
 class Recorder:
-    def __init__(self, repo_id: str, root: Path, fps: int = 30, robot_type: str = "so100_follower"):
+    def __init__(self, repo_id: str, root: Path, fps: int = 30, robot_type: str = "so100_follower",
+                 run_mode: str = "dry"):
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
         self.root = Path(root).expanduser()
@@ -54,14 +56,18 @@ class Recorder:
             self.ds = LeRobotDataset.create(repo_id, fps=fps, features=features(), root=self.root,
                                             robot_type=robot_type, use_videos=True, image_writer_threads=0,
                                             streaming_encoding=True, encoder_threads=2)
-        self.repo_id, self.fps = repo_id, fps
-        self.q: queue.Queue = queue.Queue(maxsize=600)
+        self.repo_id, self.fps, self.run_mode = repo_id, fps, run_mode  # run_mode: live | dry | fake
+        self.q: queue.Queue = queue.Queue(maxsize=600)  # frames only
+        self.ctrl: collections.deque = collections.deque()  # save/discard/close: appended without ever blocking
+        self.low_disk = False  # set by the writer thread below MIN_FREE_MB; the console reads it
         self.frames = 0  # frames in the open episode
         self.task = None
         self.saved = 0
         self.dropped = 0  # total this session
         self._ep_dropped = 0  # in the open episode
         self.last_error = None
+        self.close_error = None
+        self._closing = False
         self._t = threading.Thread(target=self._run, name="console-recorder", daemon=True)
         self._t.start()
 
@@ -81,17 +87,22 @@ class Recorder:
             self.last_error = f"writer behind: {self.dropped} frames dropped (episode marked in console_episodes.jsonl)"
 
     def save(self, verdict: str | None = None):
-        self.q.put(("save", verdict))
+        self.ctrl.append(("save", verdict))
 
     def discard(self):
-        self.q.put(("discard",))
+        self.ctrl.append(("discard",))
 
-    def close(self):
-        self.q.put(("close",))
-        self._t.join(timeout=120)
+    def close(self) -> str | None:
+        """Save the open episode and finalize. Returns None on success, else the error (never claims success)."""
+        self.ctrl.append(("close",))
+        self._t.join(timeout=180)
+        if self._t.is_alive():
+            return "writer did not finish within 180 s; dataset may be incomplete"
+        return self.close_error
 
     def status(self) -> dict:
         return {"repo_id": self.repo_id, "root": str(self.root), "episode_frames": self.frames, "free_mb": self.free_mb(),
+                "run_mode": self.run_mode, "low_disk": self.low_disk, "encoder_dropped": self._encoder_drops(),
                 "episodes_saved": self.saved, "dropped": self.dropped, "queue": self.q.qsize(),
                 "error": self.last_error}
 
@@ -102,43 +113,82 @@ class Recorder:
             bgr = cv2.resize(bgr, (W, H), interpolation=cv2.INTER_AREA)
         return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
 
+    MIN_FREE_MB = 2000
+
     def _run(self):
+        n = 0
         while True:
-            item = self.q.get()
             try:
-                kind = item[0]
-                if kind == "frame":
-                    _, state, action, scene, wrist, task = item
-                    if self.task is not None and task != self.task and self.frames:
-                        self._save(None)  # instruction changed mid-run without an explicit save: close the episode
-                    self.task = task
-                    self.ds.add_frame({"observation.state": state, "action": action,
-                                       "observation.images.scene": self._rgb(scene),
-                                       "observation.images.wrist": self._rgb(wrist), "task": task})
-                    self.frames += 1
-                elif kind == "save":
-                    self._save(item[1])
-                elif kind == "discard":
-                    if self.frames:
-                        self.ds.clear_episode_buffer()
-                    self.frames, self.task, self._ep_dropped = 0, None, 0
-                elif kind == "close":
-                    if self.frames:
-                        self._save(None)
-                    self.ds.finalize()
-                    return
+                while self.ctrl:  # control has priority over queued frames
+                    item = self.ctrl.popleft()
+                    if item[0] == "save":
+                        self._drain(); self._save(item[1])
+                    elif item[0] == "discard":
+                        self._drain(drop=True)
+                        if self.frames:
+                            self.ds.clear_episode_buffer()
+                        self.frames, self.task, self._ep_dropped = 0, None, 0
+                    elif item[0] == "close":
+                        self._closing = True
+                        self._drain()
+                        if self.frames:
+                            self._save(None)
+                        self.ds.finalize()
+                        return
+                try:
+                    item = self.q.get(timeout=0.05)
+                except queue.Empty:
+                    continue
+                self._frame(item)
+                n += 1
+                if n % 300 == 0 and self.free_mb() < self.MIN_FREE_MB:
+                    self.low_disk = True
+                    self._drain(); self._save("stopped_low_disk")
             except Exception as e:  # keep the robot loop alive whatever the dataset does
                 self.last_error = f"{type(e).__name__}: {e}"
                 log.exception("recorder")
+                if self._closing:
+                    self.close_error = self.last_error
+                    return
+
+    def _drain(self, drop: bool = False):
+        while True:
+            try:
+                item = self.q.get_nowait()
+            except queue.Empty:
+                return
+            if not drop:
+                self._frame(item)
+
+    def _frame(self, item):
+        _, state, action, scene, wrist, task = item
+        if self.low_disk:
+            return
+        if self.task is not None and task != self.task and self.frames:
+            self._save(None)  # instruction changed mid-run without an explicit save: close the episode
+        self.task = task
+        self.ds.add_frame({"observation.state": state, "action": action,
+                           "observation.images.scene": self._rgb(scene),
+                           "observation.images.wrist": self._rgb(wrist), "task": task})
+        self.frames += 1
+
+    def _encoder_drops(self) -> dict:
+        """LeRobot's streaming encoder drops frames silently when its queue is full; read its own counter."""
+        enc = getattr(getattr(self.ds, "writer", None), "_streaming_encoder", None)
+        return dict(getattr(enc, "_dropped_frames", {}) or {})
 
     def _save(self, verdict):
         if not self.frames:
             return
         n, task = self.frames, self.task
+        enc_drops = self._encoder_drops()  # read before save_episode: the next episode resets it
         self.ds.save_episode()
         idx = self.ds.meta.total_episodes - 1
         with open(self.root / "console_episodes.jsonl", "a") as f:
             f.write(json.dumps({"episode_index": idx, "task": task, "frames": n, "seconds": round(n / self.fps, 1),
-                                "verdict": verdict or "unlabeled", "dropped_frames": self._ep_dropped, "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S")}) + "\n")
+                                "verdict": verdict or "unlabeled", "run_mode": self.run_mode,
+                                "dropped_frames": self._ep_dropped, "encoder_dropped": enc_drops,
+                                "valid": self._ep_dropped == 0 and not any(enc_drops.values()) and self.run_mode == "live",
+                                "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S")}) + "\n")
         self.saved += 1
         self.frames, self.task, self._ep_dropped = 0, None, 0

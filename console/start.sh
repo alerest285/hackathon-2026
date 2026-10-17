@@ -27,7 +27,9 @@ if [ -d "$data" ]; then
   big=$(find "$data" -type d -name images -prune -exec du -sm {} + 2>/dev/null | sort -rn | head -5)
   [ -z "$big" ] || { say "disk: per-frame image folders under $data (MB, path). Review, then remove explicitly with console/cleanup.sh:"; echo "$big" | sed 's/^/          /'; }
 fi
-free_mb=$(df -Pm "$HOME" | awk 'NR==2 {print $4}')
+rec_root="$data"; prev=""; for arg in "$@"; do [ "$prev" = "--record-root" ] && rec_root="$arg"; prev="$arg"; done
+mkdir -p "$rec_root" 2>/dev/null || true
+free_mb=$(df -Pm "$rec_root" | awk 'NR==2 {print $4}')   # the disk the recording goes to, not $HOME
 say "disk: ${free_mb} MB free"
 case " $* " in *" --record "*) [ "$free_mb" -ge 5000 ] || die "only ${free_mb} MB free: not recording. Free space (console/README.md 'Disk') or drop --record." ;; esac
 

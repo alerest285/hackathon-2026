@@ -114,16 +114,16 @@ class Console:
             from recorder import Recorder
 
             root = a.record_root or Path("~/hackathon-data").expanduser() / a.record_repo.split("/")[-1]
-            self.recorder = Recorder(a.record_repo, root, robot_type=a.robot_type)
+            mode = "fake" if (a.fake_robot or a.fake_cameras or a.fake_net) else ("live" if a.live else "dry")
+            self.recorder = Recorder(a.record_repo, root, robot_type=a.robot_type, run_mode=mode)
         self.loop.add_observer(self._on_tick)
         self.loop.add_frame_tap(self._on_frame)
 
     # called on the control thread every tick: keep it cheap
     def _on_tick(self, info):
-        if self.recorder and self.recording and info.k % 300 == 0 and self.recorder.free_mb() < 2000:
-            self.recording = False  # never fill the disk: stop recording below 2 GB free, keep the episode so far
-            self.recorder.save("stopped_low_disk")
-            self.error = "recording stopped: less than 2 GB free on this disk"
+        if self.recorder and self.recording and self.recorder.low_disk:  # flag set by the writer thread; no I/O here
+            self.recording = False
+            self.error = "recording stopped: less than 2 GB free on the recording disk"
         if self.recorder and self.recording and info.task:
             sc, wr = self.full.get("scene"), self.full.get("wrist")
             if sc is not None and wr is not None:
@@ -174,11 +174,23 @@ class Console:
             self.loop.start()  # connects arm, cameras, server; holds until the first instruction
             self.started = True
 
+    def fault(self) -> str | None:
+        """A stopped loop after start() is a latched fault (SafetyStop, bus errors): no restart from the page."""
+        if self.started and not self.loop.running:
+            err = getattr(self.loop, "error", None) or "control loop stopped"
+            if self.recording and self.recorder:
+                self.recording = False
+                self.recorder.save("fault")
+            return err
+        return None
+
     def status(self) -> dict:
         with self.lock:
             info, chunk = self.info, self.last_chunk
+        fault = self.fault()
         st = {"live": bool(self.a.live), "started": self.started, "running": self.loop.running,
-              "task": self.loop.task, "error": self.error, "history": self.history[-8:], "presets": PRESETS,
+              "task": self.loop.task, "error": (f"FAULT (latched, restart the console): {fault}" if fault else self.error),
+              "fault": fault, "history": self.history[-8:], "presets": PRESETS,
               "hello": {k: v for k, v in (getattr(self.loop, "hello", None) or {}).items()
                         if isinstance(v, (str, int, float, bool))}}
         if info is not None:
@@ -249,6 +261,8 @@ def make_handler(con: Console):
             n = int(self.headers.get("Content-Length") or 0)
             body = json.loads(self.rfile.read(n) or b"{}")
             try:
+                if self.path in ("/task", "/connect") and con.fault():
+                    return self._json({"error": f"FAULT latched: {con.fault()}. Ctrl-C the console, check the arm, restart."}, 409)
                 if self.path == "/task":
                     task = str(body.get("task", "")).strip()
                     if not task:
@@ -312,8 +326,11 @@ def main(argv=None):
             con.loop.stop()
         if con.recorder:
             print("saving the open episode and finalizing the dataset ...", flush=True)
-            con.recorder.close()
-            print(f"dataset finalized: {con.recorder.root}", flush=True)
+            err = con.recorder.close()
+            if err:
+                print(f"RECORDING ERROR: {err}. Dataset at {con.recorder.root} may be incomplete; do not train on it.", flush=True)
+            else:
+                print(f"dataset finalized: {con.recorder.root}", flush=True)
         print("stopped: last command stays the motors' goal (arm holds), port closed with torque on")
 
 
