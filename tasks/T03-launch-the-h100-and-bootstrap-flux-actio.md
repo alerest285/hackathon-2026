@@ -1,8 +1,8 @@
 ---
 id: T03
 title: Launch the H100 and bootstrap flux-action
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: T02
 paths:
   - infra/aws/*.sh
