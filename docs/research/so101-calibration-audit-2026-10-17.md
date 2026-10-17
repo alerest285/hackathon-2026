@@ -5,8 +5,9 @@ no hardware, cameras, network inference, or motor calibration writes. Claude own
 console implementation. This note does not certify a numerical mapping for live use.
 
 **Follow-up:** the original history and write-failure findings below were fixed in
-`3fb5132`. See [the parallel review](#parallel-review-after-claudes-fixes) for verified
-fixes and remaining issues at `ca4ed38`, including console commit `8e303ef`.
+`3fb5132`. The parallel review records subsequent fixes through console `804fb08`
+and controller/evaluator `f00bff8`. Read the last recheck sections for current status;
+earlier numbered findings deliberately preserve the evidence from older revisions.
 
 ## Finding
 
@@ -310,3 +311,43 @@ Evidence: `/private/tmp/recording_boundary_probe.py`,
 `/private/tmp/recording_checker_probe_v2.log`. These supersede the earlier recorder
 drop-visibility, blocking-save and shutdown findings; physical calibration is still
 experimental, independently of those software fixes.
+
+### Recheck of `804fb08` and `f00bff8`
+
+The three regressions from `9da7740` are fixed and independently verified on committed
+`804fb08`, with source hashes unchanged during testing:
+
+- Save produces two separate episodes `[frame 0]`, `[frame 1]`; Discard retains the
+  next episode `[frame 1]`.
+- With 350 frames queued and free space mocked to 1 MB, 299 frames are written and
+  `low_disk` latches. Save/discard remain nonblocking with 600 frames backlogged.
+- Startup probes the nearest existing ancestor without creating the recording root;
+  an actual LeRobot recorder subsequently creates and finalizes that new dataset.
+
+Evidence: `/private/tmp/recording_boundary_probe_v3.py` and its `.log` file. Recorder
+SHA-256: `a2b5020606ba819a6f98941ccb664dea22a4442c395b0b6a5e059ba9d8073b12`;
+startup SHA-256: `c588e6ef9d81034e3c934f30cd4b90087099a1815c1f95b47214de5dda5619da`.
+
+`f00bff8` also passes both targeted regression tests and independent checks: the
+previous 100-degree dry preview now stays within +/-10-degree limits, and a blocked
+dataset save no longer blocks the control observer (`add()` returned in 0.004 ms).
+Preview plan resets intentionally remain exempt from per-tick step limits; this is
+a diagnostic display of separate candidate plans, not a continuous executable path.
+Evidence: `/private/tmp/so101_f00bff8_review.py`.
+
+### Final fitter recheck: `4fffb04`
+
+Normal saves pass. Injected disk-full staging failures preserve both previous
+outputs; a failed limits replacement restores the old mapping, and first-time
+replacement failure leaves neither active output. Temporary files are cleaned up.
+Two successive saved-sample refits keep an unknown capture calibration hash as
+`null`; known hashes and the experimental label remain preserved. The two outstanding
+fitter save/provenance findings are resolved in these tests. Evidence:
+`/private/tmp/t21-4fffb04-g3xxe305`.
+
+This completes the current software checker pass. It does not validate the physical
+map. Still relevant: independently measured joint pose correspondences and gripper
+endpoints; runtime rejection of a mapping for another robot/calibration; the legacy
+nonidentity-gripper clipping/history case; and sustained camera-encoding throughput
+on Saad's laptop. No live motion, inference benchmark, or training result was produced
+by this review. The implementation owners received each finding and recheck result.
