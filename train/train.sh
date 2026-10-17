@@ -16,6 +16,8 @@
 # training starts and never moved: the dataset's prepare_manifest.json, the joint maps it was converted with, and
 # run.json (dataset, manifest sha256, stage path). Resume and serving read it there.
 # Refuses to start while another process uses the GPU (live serving needs its latency) unless --share.
+# --policy DIR trains from another complete base (default: the decision-06 snapshot in train-env.sh), e.g. the same
+# weights with swapped normalizer stats. Its config and processor files are hashed into run.json; resume refuses if they changed.
 # Options: --workers N (loader processes; default 3 for probe/smoke, 6 for run: the old pod measured data_s 0.004 at
 # 0.9 s/microstep, and every spawn worker re-imports the venv), --wandb ENTITY/PROJECT (needs WANDB_API_KEY in the env).
 set -euo pipefail
@@ -28,7 +30,7 @@ while [ $# -gt 0 ]; do case "$1" in
   --workers) workers="$2"; shift 2 ;; --wandb) wandb="$2"; shift 2 ;;
   --policy) policy_dir="$2"; shift 2 ;;  # base checkpoint dir (e.g. /workspace/ckpt/flux-3-action-so101-hfsim-norm)
   *) echo "unknown option $1" >&2; exit 2 ;; esac; done
-usage() { sed -n 2,22p "$0"; exit 2; }
+usage() { sed -n 2,24p "$0"; exit 2; }
 case "$mode" in probe|smoke|run|resume) ;; *) usage ;; esac
 [ -n "$name" ] || usage
 [ $((effective % batch)) -eq 0 ] || { echo "--effective $effective is not a multiple of --batch $batch" >&2; exit 2; }
@@ -39,8 +41,13 @@ export LEROBOT_DIR="${LEROBOT_DIR:-/workspace/lerobot-flux3}" HF_HOME="${HF_HOME
 . /workspace/train-env.sh
 if [ -n "$policy_dir" ]; then
   [ -f "$policy_dir/config.json" ] || { echo "--policy $policy_dir: no config.json there" >&2; exit 2; }
-  POLICY_DIR="$policy_dir"; echo "base policy: $POLICY_DIR"
+  POLICY_DIR="$(cd "$policy_dir" && pwd)"; echo "base policy: $POLICY_DIR"
 fi
+# sha256 of a base's config and processor/normalizer files: small, and the part a hand-made base changes
+policy_hashes() {
+  (cd "$1" && find -L . -maxdepth 1 -type f \( -name '*.json' -o -name '*.safetensors' ! -name 'model*.safetensors' \) -print0 \
+    | sort -z | xargs -0 sha256sum) | python3 -c 'import sys,json;print(json.dumps({l.split()[1][2:]:l.split()[0] for l in sys.stdin if l.strip()},sort_keys=True))'
+}
 PY="$LEROBOT_DIR/.venv/bin/python"
 ENV_PREFIX="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TOKENIZERS_PARALLELISM=false"
 mkdir -p /workspace/train-logs
@@ -104,6 +111,12 @@ if [ "$mode" = resume ]; then
     [ -e "$m" ] || { echo "run $name has no provenance maps: prepare.py always copies them, refusing to resume" >&2; exit 1; }
     [ "$(sha "$m")" = "$(basename "$m" .json)" ] || { echo "provenance map $m does not match its hash" >&2; exit 1; }
   done
+  read -r pol want_p < <(python3 -c 'import json,sys;r=json.load(open(sys.argv[1]));print(r.get("policy_dir") or "-", json.dumps(r.get("policy_files"),sort_keys=True).replace(" ",""))' "$prov/run.json")
+  if [ "$pol" != "-" ] && [ "$want_p" != "null" ]; then   # older runs have no hashes; the decision-06 snapshot is immutable
+    [ -f "$pol/config.json" ] || { echo "base $pol is gone: not resuming" >&2; exit 1; }
+    [ "$want_p" = "$(policy_hashes "$pol" | tr -d ' ')" ] || { echo "base $pol changed since $name started (config/processor hashes): not resuming" >&2; exit 1; }
+    echo "base $pol verified"
+  fi
   staged=$(stage_dataset "$dname" "$stage")
   echo "restaged $dname at $staged (manifest $want verified)"
   log="/workspace/train-logs/$name.resume-$(date -u +%m%d-%H%M).log"
@@ -171,11 +184,12 @@ write_provenance() {  # the exact data contract this adapter is tied to, before 
   mkdir -p "$prov/maps"
   cp "$src/prepare_manifest.json" "$prov/"
   cp "$src"/maps/*.json "$prov/maps/" 2>/dev/null || true
-  python3 - "$prov/run.json" "$name" "$(sha "$src/prepare_manifest.json")" "$staged" "$mode" "$batch" "$accum" "$POLICY_DIR" <<'PY'
+  python3 - "$prov/run.json" "$name" "$(sha "$src/prepare_manifest.json")" "$staged" "$mode" "$batch" "$accum" "$POLICY_DIR" \
+    "$(policy_hashes "$POLICY_DIR")" "$ENCODERS_DIR" <<'PY'
 import json, sys, time
-p, name, msha, stage, mode, b, a, policy = sys.argv[1:]
+p, name, msha, stage, mode, b, a, policy, phash, enc = sys.argv[1:]
 json.dump({"dataset": name, "manifest_sha256": msha, "stage": stage, "mode": mode, "batch": int(b), "accum": int(a),
-           "policy_dir": policy,
+           "policy_dir": policy, "policy_files": json.loads(phash), "encoders_dir": enc,
            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, open(p, "w"), indent=1)
 PY
 }
