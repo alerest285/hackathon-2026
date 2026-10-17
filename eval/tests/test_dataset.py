@@ -18,19 +18,39 @@ LIMITS = [[-110.0, 110.0], [-105.0, 105.0], [-100.0, 100.0], [-100.0, 100.0], [-
 OFFSET = np.array([0.0, 200.0, 50.0, 0.0, 0.0, 0.0])  # model = ours + OFFSET; the gripper stays as it is
 
 
-def write_map(tmp_path, offset=OFFSET):
-    """A console/mapping.py JointMap with slope 1 and a per-joint offset."""
-    mapping = console_module("mapping")
-    lo = np.array([-50.0, -50.0, -50.0, -50.0, -50.0, 0.0])
-    path = tmp_path / "joint_mapping.json"
-    mapping.JointMap(lo, lo + 100.0, lo + offset, lo + 100.0 + offset).save(path)
+ROBOT_ID = "so101_follower"  # the config's robot.id
+
+
+@pytest.fixture
+def calibration(tmp_path, monkeypatch):
+    """The arm's calibration file, wherever LeRobot would look for it."""
+    from so101_client.robot_io import SO101
+
+    path = tmp_path / "calibration" / f"{ROBOT_ID}.json"
+    path.parent.mkdir()
+    path.write_text('{"shoulder_pan": {"homing_offset": 28}}')
+    monkeypatch.setattr(SO101, "calibration_path", property(lambda self: path))
     return path
 
 
-def test_the_real_arm_is_mapped_and_guarded_in_its_own_degrees(tmp_path):
+def write_map(tmp_path, offset=OFFSET, robot_id=ROBOT_ID, calibration=None, name="joint_mapping.json"):
+    """A console/mapping.py JointMap with slope 1 and a per-joint offset, stamped like fit_reference.py's."""
+    import hashlib
+
+    mapping = console_module("mapping")
+    lo = np.array([-50.0, -50.0, -50.0, -50.0, -50.0, 0.0])
+    meta = {"robot_id": robot_id}
+    if calibration is not None:
+        meta["calibration_sha256"] = hashlib.sha256(calibration.read_bytes()).hexdigest()
+    path = tmp_path / name
+    mapping.JointMap(lo, lo + 100.0, lo + offset, lo + 100.0 + offset, meta=meta).save(path)
+    return path
+
+
+def test_the_real_arm_is_mapped_and_guarded_in_its_own_degrees(tmp_path, calibration):
     from so101_client.robot_io import SO101
 
-    path = write_map(tmp_path)
+    path = write_map(tmp_path, calibration=calibration)
     cfg = load_config(CONFIG, {"robot.port": "/dev/tty.none", "robot.mapping": str(path), "loop.joint_limits": LIMITS})
     rig = build_rig(cfg, SessionOptions(live=True))  # builds, connects nothing
     assert type(rig.robot).__name__ == "MappedRobot" and isinstance(rig.robot._r, SO101)
@@ -40,11 +60,12 @@ def test_the_real_arm_is_mapped_and_guarded_in_its_own_degrees(tmp_path):
     assert rig.loop_limits[1] == pytest.approx((95.0, 305.0))  # the loop clamps in the checkpoint's convention
 
 
-def test_live_refuses_without_limits_or_without_the_joint_map(tmp_path):
+def test_live_refuses_without_limits_or_without_the_joint_map(tmp_path, calibration):
     base = {"robot.port": "/dev/tty.none"}
     missing = str(tmp_path / "missing.json")
+    good = str(write_map(tmp_path, calibration=calibration))
     with pytest.raises(SystemExit, match="--live needs joint limits"):
-        build_rig(load_config(CONFIG, {**base, "robot.mapping": str(write_map(tmp_path))}), SessionOptions(live=True))
+        build_rig(load_config(CONFIG, {**base, "robot.mapping": good}), SessionOptions(live=True))
     with pytest.raises(SystemExit, match="no joint map"):
         build_rig(load_config(CONFIG, {**base, "robot.mapping": missing, "loop.joint_limits": LIMITS}),
                   SessionOptions(live=True))
@@ -53,6 +74,21 @@ def test_live_refuses_without_limits_or_without_the_joint_map(tmp_path):
     raw = build_rig(load_config(CONFIG, {**base, "robot.mapping": "", "loop.joint_limits": LIMITS}),
                     SessionOptions(live=True))
     assert raw.joint_map is None and raw.loop_limits == raw.native_limits  # "" opts out explicitly
+
+
+def test_a_joint_map_fitted_for_another_arm_or_calibration_is_refused_live(tmp_path, calibration):
+    base = {"robot.port": "/dev/tty.none", "loop.joint_limits": LIMITS}
+    other_arm = write_map(tmp_path, robot_id="other_arm", calibration=calibration, name="other.json")
+    unstamped = write_map(tmp_path, name="sweep.json")  # a T20 sweep map: robot id only
+    recalibrated = write_map(tmp_path, calibration=calibration, name="old.json")
+    calibration.write_text('{"shoulder_pan": {"homing_offset": 31}}')  # recalibrated after the fit
+    for path, why in ((other_arm, "fitted for robot id 'other_arm'"), (unstamped, "no calibration fingerprint"),
+                      (recalibrated, "another calibration")):
+        cfg = load_config(CONFIG, {**base, "robot.mapping": str(path)})
+        with pytest.raises(SystemExit, match=why):
+            build_rig(cfg, SessionOptions(live=True))
+        dry = build_rig(cfg, SessionOptions())  # a dry run only warns, and still uses the map
+        assert dry.joint_map is not None and any(why in w for w in dry.warnings)
 
 
 def test_mapped_fake_run_logs_native_units_and_records_one_lerobot_episode_per_attempt(tmp_path, monkeypatch):
@@ -95,7 +131,10 @@ def test_mapped_fake_run_logs_native_units_and_records_one_lerobot_episode_per_a
     assert [s["attempt"] for s in side] == [a["attempt"] for a in attempts]
     assert [s["task"] for s in side] == [a["prompt"] for a in attempts]
     assert all(s["verdict"] == "success" and s["frames"] > 0 and s["run"] == run_dir.name for s in side)
-    assert all(s["fake"] and not s["live"] for s in side)
+    assert all(s["fake"] and not s["live"] and s["run_mode"] == "fake" for s in side)
+    checks = read_jsonl(root / "console_episodes.jsonl")  # the recorder's own data checks, same episode indices
+    assert [c["episode_index"] for c in checks] == list(range(7))
+    assert all(c["run_mode"] == "fake" and c["valid"] is False for c in checks)  # never training data
     assert sum(s["frames"] for s in side) == ds.meta.total_frames
     states = np.stack([np.asarray(row) for row in ds.hf_dataset["observation.state"]])
     assert abs(np.median(states[:, 1]) - REST_POSE[1]) < 30  # the dataset holds the arm's own degrees

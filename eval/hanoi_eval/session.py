@@ -17,7 +17,7 @@ import sys
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-from .dataset import HanoiDataset, load_joint_map
+from .dataset import HanoiDataset, load_joint_map, map_identity_problems
 from .hanoi import all_prompts
 from .keys import KeyListener
 from .recorder import git_info, make_run_dir, utc_now
@@ -121,26 +121,30 @@ def build_rig(cfg, opts: SessionOptions) -> Rig:
     if opts.live and limits is None:
         raise SystemExit("--live needs joint limits in the arm's own degrees: --limits <file> (robot/readout.py "
                          "--save-limits or console/fit_reference.py) or loop.joint_limits in the config")
-    rig = Rig(None, None, None, native_limits=limits, loop_limits=limits)
-    if cfg.robot.mapping:
-        path = Path(cfg.robot.mapping).expanduser()
-        if path.is_file():
-            rig.joint_map, mapped = load_joint_map(path)
-            rig.joint_map_path = str(path)
-            rig.loop_limits = rig.joint_map.limits_to_model(limits)
-        elif opts.live:
-            raise SystemExit(f"no joint map at {path}: run console/fit_reference.py (T21) first. robot.mapping = \"\" "
-                             "sends raw LeRobot degrees, which the checkpoint was not trained on")
-        else:
-            rig.warnings.append(f"no joint map at {path}: this dry run sends raw LeRobot degrees")
     from so101_client.cameras import Cameras
     from so101_client.net import NetClient
     from so101_client.robot_io import SO101
     from so101_client.safety import NativeGuard
 
-    rig.guard = NativeGuard(limits=limits)
+    rig = Rig(None, None, None, native_limits=limits, loop_limits=limits, guard=NativeGuard(limits=limits))
     robot = SO101(cfg.robot.port, cfg.robot.id, use_degrees=True, guard=rig.guard)
-    rig.robot = mapped(robot, rig.joint_map) if rig.joint_map is not None else robot
+    if cfg.robot.mapping:
+        path = Path(cfg.robot.mapping).expanduser()
+        if path.is_file():
+            jmap, mapped = load_joint_map(path)
+            problems = map_identity_problems(jmap.meta, cfg.robot.id, robot.calibration_path)
+            if problems and opts.live:
+                raise SystemExit(f"the joint map {path} does not fit this arm: {'; '.join(problems)}")
+            rig.warnings += [f"the joint map {path} may not fit this arm: {problem}" for problem in problems]
+            rig.joint_map, rig.joint_map_path = jmap, str(path)
+            rig.loop_limits = jmap.limits_to_model(limits)
+            robot = mapped(robot, jmap)
+        elif opts.live:
+            raise SystemExit(f"no joint map at {path}: run console/fit_reference.py (T21) first. robot.mapping = \"\" "
+                             "sends raw LeRobot degrees, which the checkpoint was not trained on")
+        else:
+            rig.warnings.append(f"no joint map at {path}: this dry run sends raw LeRobot degrees")
+    rig.robot = robot
     rig.cameras, rig.net = Cameras(sources, **camera_args), NetClient(cfg.server.url)
     return rig
 
@@ -151,7 +155,8 @@ def open_dataset(cfg, opts: SessionOptions) -> HanoiDataset | None:
     if not record:
         return None
     r = cfg.record
-    return HanoiDataset(r.repo_id, r.root, robot_type=r.robot_type, fps=round(cfg.loop.fps))
+    run_mode = "fake" if opts.fake or opts.fake_hardware else ("live" if opts.live else "dry")
+    return HanoiDataset(r.repo_id, r.root, robot_type=r.robot_type, fps=round(cfg.loop.fps), run_mode=run_mode)
 
 
 def run_session(cfg, opts: SessionOptions, keys_source=None, log=print) -> tuple[Path | None, HanoiRunner | None]:

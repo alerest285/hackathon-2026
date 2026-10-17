@@ -58,11 +58,13 @@ which follows them. `--limits limits.json` takes the joint limits in the arm's o
 Live runs also record every step attempt as one LeRobotDataset episode, task = its prompt, through
 `console/recorder.py` (the features of `lerobot-record`'s so100_follower: `observation.state`, `action` in the
 arm's degrees, scene and wrist video 480x640), to `record.root` (default `~/hackathon-data/so100_hanoi_eval`,
-local only). LeRobot's metadata stays untouched; `<root>/hanoi_episodes.jsonl` has one line per saved episode:
-`episode_index`, `task`, `frames`, `verdict` (success, fail, error, quit), the run, episode, step, try, attempt,
-end reason, pauses and interventions. Frames stop during a pause (a person may be in the scene), so filter on
-`interventions == 0` and `verdict == "success"` for training. `--no-record` turns it off; `--record` also records
-dry and fake runs, whose actions never moved an arm.
+local only). LeRobot's metadata stays untouched. Two sidecars, one line per saved episode, keyed by
+`episode_index`: the recorder's `console_episodes.jsonl` (`run_mode` live/dry/fake, dropped and encoder-dropped
+frames, `valid` = live with no drops) and eval's `hanoi_episodes.jsonl` (`task`, `frames`, `verdict` success, fail,
+error or quit, `run_mode`, the run, episode, step, try, attempt, end reason, pauses and interventions). Frames
+stop during a pause (a person may be in the scene), so for training keep episodes that are `valid`, `success` and
+have `interventions == 0`. `--no-record` turns it off; `--record` also records dry and fake runs, whose actions
+never moved an arm (they are never `valid`).
 `--unattended` (alias `--auto-confirm`) is test-only and needs `--fake` or `--fake-hardware`: it presses enter at
 every prompt and answers a verdict with success after an auto end and fail after a timeout, for runs without a
 terminal. Fake runs keep the configured label unless `--label` is given, so name them apart from real runs.
