@@ -1,0 +1,7 @@
+# One instruction per line. The console shows these as buttons, and start.sh pre-warms the server with them
+# (so their captions are already encoded when a run starts). Hanoi wording follows decision 05.
+pick up the small disk and place it on the middle peg
+pick up the medium disk and place it on the right peg
+pick up the small disk and place it on the right peg
+pick up the large disk and place it on the middle peg
+pick up the red cube and place it in the bowl

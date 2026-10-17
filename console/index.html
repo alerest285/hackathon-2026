@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arm Console</title>
+<style>
+  :root { --bg:#f6f6f4; --card:#fff; --ink:#1b1b1b; --mute:#6b6b6b; --line:#e3e3df; --accent:#1f4fd1; --ok:#1d7a3a; --warn:#b45309; --bad:#b91c1c; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121212; --card:#1b1b1b; --ink:#ececec; --mute:#9a9a9a; --line:#2c2c2c; --accent:#7aa2ff; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.45 -apple-system, system-ui, sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; display:grid; gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  h1 { font-size:17px; margin:0; } .mute { color:var(--mute); }
+  .bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .pill { padding:2px 9px; border-radius:99px; font-size:12px; font-weight:600; border:1px solid var(--line); }
+  .live { background:var(--bad); color:#fff; border-color:var(--bad); } .dry { color:var(--ok); }
+  textarea { width:100%; min-height:62px; font:15px/1.4 inherit; padding:10px; border:1px solid var(--line); border-radius:8px; background:transparent; color:inherit; resize:vertical; }
+  button { font:inherit; padding:8px 14px; border-radius:8px; border:1px solid var(--line); background:var(--card); color:inherit; cursor:pointer; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; } button.stop { border-color:var(--bad); color:var(--bad); font-weight:600; }
+  .presets button { font-size:12.5px; padding:5px 9px; }
+  .cams { display:grid; grid-template-columns:1fr 1fr; gap:10px; } .cams img { width:100%; aspect-ratio:4/3; object-fit:cover; background:#000; border-radius:8px; display:block; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; } td,th { text-align:left; padding:3px 6px; border-bottom:1px solid var(--line); } th { font-weight:500; color:var(--mute); }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:3px 12px; font-variant-numeric:tabular-nums; }
+  .err { color:var(--bad); white-space:pre-wrap; }
+  @media (max-width:760px) { .cams, .grid2 { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="card bar">
+    <h1>Arm Console</h1><span id="mode" class="pill">...</span><span id="conn" class="pill">not connected</span>
+    <span class="mute" id="task">no instruction yet</span>
+  </div>
+
+  <div class="card">
+    <textarea id="prompt" placeholder="pick up the small disk and place it on the middle peg"></textarea>
+    <div class="bar" style="margin-top:8px">
+      <button class="primary" onclick="send(true)" title="start a new episode with this instruction">Run (new episode)</button>
+      <button onclick="send(false)" title="next step: keep the history, drop queued actions">Next instruction</button>
+      <button class="stop" onclick="post('/pause')" title="hold position, no new requests">Pause / hold</button>
+      <span class="mute">Ctrl+Enter runs. Pause holds the arm; the physical power switch is the real stop.</span>
+    </div>
+    <div class="bar presets" id="presets" style="margin-top:8px"></div>
+    <div id="error" class="err"></div>
+  </div>
+
+  <div class="card cams">
+    <div><div class="mute">scene (fixed, left in the model's image)</div><img id="cam-scene" alt="scene camera"></div>
+    <div><div class="mute">wrist (on the gripper, right)</div><img id="cam-wrist" alt="wrist camera"></div>
+  </div>
+
+  <div class="grid2">
+    <div class="card"><table><thead><tr><th>joint</th><th>measured</th><th>command</th><th>trained range</th></tr></thead><tbody id="joints"></tbody></table></div>
+    <div class="card kv" id="kv"></div>
+  </div>
+
+  <div class="card"><div class="mute" style="margin-bottom:4px">instructions sent</div><div id="hist" class="mute">none yet</div></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+async function post(path, body) {
+  const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})});
+  const j = await r.json().catch(()=>({}));
+  $('error').textContent = j.error ? j.error : '';
+}
+function send(reset) {
+  const t = $('prompt').value.trim();
+  if (!t) { $('error').textContent = 'type an instruction first'; return; }
+  post('/task', {task:t, reset});
+}
+$('prompt').addEventListener('keydown', e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send(true); });
+let presetsDone = false;
+function fmt(v) { return v === undefined || v === null ? '–' : (typeof v === 'number' ? (Math.round(v*10)/10) : v); }
+async function tick() {
+  try {
+    const s = await (await fetch('/status')).json();
+    $('mode').textContent = s.live ? 'LIVE: motors move' : 'dry run: motors untouched';
+    $('mode').className = 'pill ' + (s.live ? 'live' : 'dry');
+    $('conn').textContent = s.running ? (s.held ? 'connected, holding' : 'connected, running') : (s.started ? 'stopped' : 'not connected');
+    $('task').textContent = s.task ? '"' + s.task + '"' : 'no instruction yet';
+    if (!presetsDone && s.presets) {
+      $('presets').innerHTML = '';
+      s.presets.forEach(p => { const b = document.createElement('button'); b.textContent = p; b.onclick = () => { $('prompt').value = p; }; $('presets').appendChild(b); });
+      presetsDone = true;
+    }
+    const names = s.state ? Object.keys(s.state) : [];
+    const oor = new Set(s.out_of_range || []), tr = s.trained_range || {};
+    $('joints').innerHTML = names.map(n => `<tr${oor.has(n)?' style="color:var(--bad);font-weight:600"':''}><td>${n}</td><td>${fmt(s.state[n])}</td><td>${fmt(s.cmd[n])}</td><td class="mute">${tr[n]?tr[n].join(' … '):''}</td></tr>`).join('') || '<tr><td colspan=4 class="mute">connects on the first instruction</td></tr>';
+    const c = s.last_chunk || {}, st = s.stats || {};
+    const kv = { 'tick': s.tick, 'actions queued': s.remaining, 'last turnaround ms': c.turnaround_ms, 'server ms': c.server_ms,
+      'chunk accepted': c.accepted, 'tick lateness ms': s.lateness_ms,
+      'frame age ms': s.frame_age_ms ? Object.entries(s.frame_age_ms).map(([k,v])=>k+' '+v).join(', ') : undefined,
+      'engine': s.hello && (s.hello.engine || s.hello.model || s.hello.gpu) };
+    for (const [k,v] of Object.entries(st)) if (typeof v !== 'object') kv[k] = v;
+    $('kv').innerHTML = Object.entries(kv).map(([k,v]) => `<div class="mute">${k}</div><div>${fmt(v)}</div>`).join('');
+    $('hist').innerHTML = (s.history||[]).slice().reverse().map(h => `${h.t} ${h.reset?'run':'next'}: ${h.task}`).join('<br>') || 'none yet';
+    if (s.error) $('error').textContent = s.error;
+    else if ((s.out_of_range||[]).length) $('error').textContent = 'Outside the range the model was trained on: ' + s.out_of_range.join(', ') + '. Your arm calibration likely differs from BFL\'s; zero-shot will not work until it matches (see console/README.md).';
+  } catch (e) { $('conn').textContent = 'console not reachable'; }
+}
+function cams() { for (const c of ['scene','wrist']) { const i = new Image(); i.onload = () => { $('cam-'+c).src = i.src; }; i.src = '/cam/'+c+'.jpg?'+Date.now(); } }
+setInterval(tick, 300); setInterval(cams, 200); tick();
+</script>
+</body>
+</html>

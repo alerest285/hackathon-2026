@@ -82,6 +82,22 @@ uv run --extra encoders python examples/so101/inference.py --weights black-fores
 Rig rules learned the hard way: the scene camera is the fixed overview (left in the tiled image) and the wrist camera is
 on the gripper (right). Never swap them. Both must have the same resolution, and joint states are in degrees, not LeRobot's −100…100 range.
 
+## Drive the real arm (Saad)
+
+On the Mac with the SO-101 and both cameras plugged in:
+
+```sh
+git pull
+console/start.sh --port /dev/tty.usbmodemXXXX --scene 0 --wrist 1      # dry run first; add --live to move the arm
+```
+
+A page opens at **http://127.0.0.1:8765**. Type an instruction (or pick a preset), press **Run**, and watch both cameras
+and the joints. Use **Next instruction** for the next Hanoi step, and **Pause** to hold. First time on an arm: follow
+[`console/README.md`](console/README.md) "Before the first live run". Above all, check that your calibration falls inside the
+range the model was trained on. The page marks joints outside it in red.
+
+The policy server runs on the pod in tmux `so101-serve` (514 ms per plan, H100). `start.sh` starts it if it is down.
+
 ## Sharing the GPU
 
 One H100, four people. The model takes ~26 GB of 80, so two inference jobs fit side by side. Training or compiling does not.
