@@ -1,8 +1,8 @@
 ---
 id: T20
 title: Calibration mapping: our arm range -> checkpoint range
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - console/**
