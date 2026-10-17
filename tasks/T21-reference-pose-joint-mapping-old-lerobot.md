@@ -1,8 +1,8 @@
 ---
 id: T21
 title: Reference-pose joint mapping: old LeRobot SO-100 calibration (fit_reference.py)
-status: todo
-owner: 
+status: doing
+owner: saadl27
 depends: 
 paths:
   - console/fit_reference.py
