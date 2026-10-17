@@ -1,8 +1,8 @@
 ---
 id: T16
 title: README: parallel-agent rules + zero-shot runbook
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - README.md
