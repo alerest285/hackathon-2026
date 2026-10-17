@@ -12,8 +12,9 @@ predicted chunk back to native units, and compares with what the operator actual
 
   corr      correlation between predicted and recorded joint motion over the chunk (pred[k]-pred[0] vs rec[k]-rec[0]).
             Clearly NEGATIVE on a joint = its sign in the map is reversed. Near zero = the model ignores/doesn't know it.
-  start_gap mean (pred[0] - current state), native deg. The model's first command should start at the arm's state;
-            a consistent gap of many degrees on one joint = that joint's OFFSET in the map is wrong.
+  start_gap median (pred[0] - current state), native deg. NOT an offset test: the checkpoint predicts joint deltas
+            integrated onto the measured state, so pred[0] always starts at the state. An offset error shows up as
+            wrong or weak motion (low corr, high err) instead. Kept only as a sanity check (should be ~0).
   err       mean |pred - recorded| over the chunk, native deg.
 
 Also runs the same frames with --map off (raw native state) for comparison. Writes report.json + report.md to --out.
@@ -113,8 +114,9 @@ def summarize(rs):
         x, y = pd_[:, j], rd[:, j]
         corr = float(np.corrcoef(x, y)[0, 1]) if x.std() > 1e-6 and y.std() > 1e-6 else float("nan")
         gaps = np.array([r["start_gap"][j] for r in rs]); errs = np.array([r["err"][j] for r in rs])
-        verdict = ("SIGN?" if corr < -0.2 else "weak" if not corr > 0.2 else "ok") + \
-                  (" OFFSET?" if abs(np.median(gaps)) > 8 else "")
+        verdict = "SIGN reversed?" if corr < -0.2 else ("weak/unknown" if not corr > 0.2 else "ok")
+        if y.std() < 2:
+            verdict = "not judged (operator barely moved it)"
         out[name] = {"corr": round(corr, 2), "start_gap_median": round(float(np.median(gaps)), 1),
                      "err_mean": round(float(errs.mean()), 1), "recorded_motion_std": round(float(y.std()), 1), "verdict": verdict}
     return out
@@ -128,7 +130,8 @@ lines = [f"# Calibration check {time.strftime('%Y-%m-%d %H:%M')}", "", f"dataset
 for name in JOINTS:
     m, r = report["mapped"][name], report["raw"][name]
     lines.append(f"| {name} | {m['corr']} | {r['corr']} | {m['start_gap_median']} | {m['err_mean']} | {r['err_mean']} | {m['verdict']} |")
-lines += ["", "corr < -0.2: sign reversed in the map. |start gap| > 8 deg: offset wrong. Joints the operator barely moved "
-          "(recorded_motion_std small, see report.json) cannot be judged."]
+lines += ["", "Read per joint: corr > 0.2 = model moves with the operator (map plausible); corr < -0.2 = sign reversed in the map; "
+          "corr near 0 or err much worse than raw = offset/scale suspect. Compare against the raw columns: the map must not be "
+          "worse than raw. start gap is a sanity check only (deltas are integrated onto the state)."]
 (a.out / "report.md").write_text("\n".join(lines) + "\n")
 print("\n".join(lines))

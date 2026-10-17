@@ -86,11 +86,12 @@ class Console:
         limits = robot_run.load_limits(a.limits)
         from mapping import DEFAULT_PATH, JointMap, MappedRobot
 
-        self.jmap, self.mapping_status = None, "off (--no-mapping)"
+        self.jmap, self.mapping_status, self.map_identity = None, "off (--no-mapping)", None
         mpath = Path(a.mapping or DEFAULT_PATH).expanduser()
         if not a.no_mapping:
             if mpath.exists():
                 self.jmap = JointMap.load(mpath)
+                self.map_identity = self._check_map_identity(self.jmap, robot)
                 robot = MappedRobot(robot, self.jmap)  # loop, history and server all see the checkpoint's convention
                 limits = self.jmap.limits_to_model(limits)
                 self.mapping_status = "on"
@@ -150,6 +151,32 @@ class Console:
             with self.lock:
                 self.jpeg[cam] = buf.tobytes()
 
+    def _check_map_identity(self, jmap, robot) -> str:
+        """Same rule as eval/ (114abb9): the map must belong to THIS robot id and THIS calibration file.
+        Live refuses a mismatch or an unstamped map; dry run and fakes only warn."""
+        import hashlib
+
+        if self.a.fake_robot:
+            return "fake robot: identity not checked"
+        meta = jmap.meta or {}
+        problems = []
+        if meta.get("robot_id") != self.a.robot_id:
+            problems.append(f"map robot_id {meta.get('robot_id')!r} != --robot-id {self.a.robot_id!r}")
+        want = meta.get("calibration_sha256")
+        cal = getattr(robot, "calibration_path", None)
+        if not want:
+            problems.append("map has no calibration_sha256 (refit with console/fit_reference.py)")
+        elif cal is None or not Path(cal).exists():
+            problems.append("calibration file missing")
+        elif hashlib.sha256(Path(cal).read_bytes()).hexdigest() != want:
+            problems.append("arm was recalibrated after the map was made (calibration sha256 differs): refit the map")
+        if not problems:
+            return "ok"
+        msg = "; ".join(problems)
+        if self.a.live:
+            raise SystemExit(f"refusing --live: joint map identity check failed: {msg}")
+        return f"WARNING {msg}"
+
     def calibration(self) -> dict:
         """The follower's LeRobot calibration file, as the page shows it."""
         robot = self.loop.robot
@@ -202,7 +229,7 @@ class Console:
                       frame_age_ms={k: round(float(v), 0) for k, v in (info.frame_age_ms or {}).items()})
         st["last_chunk"] = chunk
         st["recording"] = self.recording
-        st["mapping"] = {"status": self.mapping_status, "path": self.mapping_path,
+        st["mapping"] = {"status": self.mapping_status, "path": self.mapping_path, "identity": self.map_identity,
                          "fitted": (self.jmap.meta or {}).get("fitted_at") if self.jmap else None}
         if self.jmap is not None and info is not None:
             st["raw_state"] = dict(zip(STATE_NAMES, np.round(self.jmap.to_ours(info.state).astype(float), 1).tolist()))

@@ -112,7 +112,8 @@ async function tick() {
     const m = s.mapping || {};
     $('map').textContent = 'mapping ' + (m.status || '?') + (m.fitted ? ' (' + m.fitted.slice(0,16) + ')' : '');
     $('map').className = 'pill ' + (m.status === 'on' ? 'dry' : 'live');
-    $('map').title = (m.path || '') + (m.warning ? ' · ' + m.warning : '');
+    $('map').title = (m.path || '') + (m.warning ? ' · ' + m.warning : '') + (m.identity ? ' · identity: ' + m.identity : '');
+    if (m.identity && m.identity.startsWith('WARNING')) $('map').className = 'pill live';
     const cal = s.calibration || {};
     $('calst').textContent = cal.status || '...'; $('calst').className = 'pill ' + (cal.status === 'ok' ? 'dry' : (cal.status === 'MISSING' ? 'live' : ''));
     $('calpath').textContent = (cal.path || '') + (cal.modified ? ' · ' + cal.modified : '');
