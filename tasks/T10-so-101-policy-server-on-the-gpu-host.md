@@ -1,8 +1,8 @@
 ---
 id: T10
 title: SO-101 policy server on the GPU host
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - infra/gpu/so101/**
