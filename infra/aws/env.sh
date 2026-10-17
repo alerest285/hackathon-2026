@@ -6,10 +6,12 @@ export AWS_DEFAULT_REGION="$AWS_REGION"
 HACK_NAME="${HACK_NAME:-hack-2026-gpu}"
 HACK_TYPE="${HACK_TYPE:-p5.4xlarge}"          # 1x H100 80 GB, 16 vCPU
 HACK_MARKET="${HACK_MARKET:-spot}"            # spot (~$3.2/h, needs the paid plan) | ondemand ($7.36/h)
-HACK_DISK_GB="${HACK_DISK_GB:-250}"
+HACK_DISK_GB="${HACK_DISK_GB:-200}"          # AMI ~60 GB + SO-101 policy 14 GB + shared encoders ~25 GB + env
 HACK_AMI_PARAM="${HACK_AMI_PARAM:-/aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-24.04/latest/ami-id}"
 HACK_IDLE_MIN="${HACK_IDLE_MIN:-45}"          # instance stops itself after this many idle minutes
 HACK_BUDGET_USD="${HACK_BUDGET_USD:-150}"
+# Your public key becomes the EC2 launch key (teammates get in via their GitHub keys, members.txt).
+HACK_SSH_PUBKEY="${HACK_SSH_PUBKEY:-$(ls ~/.ssh/id_ed25519.pub ~/.ssh/id_ecdsa.pub ~/.ssh/id_rsa.pub 2>/dev/null | head -1)}"
 die() { echo "error: $*" >&2; exit 1; }
 need_aws() { aws sts get-caller-identity >/dev/null 2>&1 || die "AWS credentials missing or expired. Run: aws login --profile $AWS_PROFILE"; }
 market_opts() { # args for run-instances
@@ -18,7 +20,7 @@ ondemand_price() {
   aws pricing get-products --region us-east-1 --service-code AmazonEC2 --filters "Type=TERM_MATCH,Field=instanceType,Value=$HACK_TYPE" \
     "Type=TERM_MATCH,Field=regionCode,Value=$AWS_REGION" "Type=TERM_MATCH,Field=operatingSystem,Value=Linux" "Type=TERM_MATCH,Field=tenancy,Value=Shared" \
     "Type=TERM_MATCH,Field=preInstalledSw,Value=NA" "Type=TERM_MATCH,Field=capacitystatus,Value=Used" "Type=TERM_MATCH,Field=marketoption,Value=OnDemand" \
-    --query 'PriceList[0]' --output text 2>/dev/null | sed -n 's/.*"USD" *: *"\([0-9.]*\)".*/\1/p' | head -1; }
+    --query 'PriceList[0]' --output text 2>/dev/null | sed -n 's/.*"USD" *: *"\([0-9.]*\)".*/\1/p' | head -1 | xargs printf '%.2f'; }
 instance_id() { # newest non-terminated instance with our Name tag
   aws ec2 describe-instances --filters "Name=tag:Name,Values=$HACK_NAME" \
     "Name=instance-state-name,Values=pending,running,stopping,stopped" \

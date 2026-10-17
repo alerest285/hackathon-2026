@@ -39,12 +39,16 @@ else
     sg="$(aws ec2 create-security-group --group-name hack-2026-ssh --description 'SSH only, key auth' --vpc-id "$vpc" --query GroupId --output text)"
     aws ec2 authorize-security-group-ingress --group-id "$sg" --protocol tcp --port 22 --cidr 0.0.0.0/0 >/dev/null
   fi
+  [ -f "$HACK_SSH_PUBKEY" ] || die "no ssh public key found. Create one: ssh-keygen -t ed25519"
+  keyname="hack-2026-$(git config --get hack.member 2>/dev/null || whoami)"
+  aws ec2 describe-key-pairs --key-names "$keyname" >/dev/null 2>&1 || \
+    aws ec2 import-key-pair --key-name "$keyname" --public-key-material "fileb://$HACK_SSH_PUBKEY" >/dev/null
   members="$(grep -v '^#' "$here/members.txt" | sed '/^ *$/d' | tr '\n' ' ')"
-  [ -n "$members" ] || die "add GitHub logins to infra/aws/members.txt first (their public keys get ssh access)."
+  [ -n "$members" ] || members="none"
   ud="$(sed "s/__MEMBERS__/$members/; s/__IDLE_MIN__/$HACK_IDLE_MIN/g" "$here/user-data.sh")"
   echo "launching $HACK_TYPE $HACK_MARKET in $az (ami $ami)..."
   id="$(aws ec2 run-instances --image-id "$ami" --instance-type "$HACK_TYPE" --subnet-id "$subnet" \
-    --security-group-ids "$sg" --associate-public-ip-address \
+    --key-name "$keyname" --security-group-ids "$sg" --associate-public-ip-address \
     $(market_opts) \
     --block-device-mappings "DeviceName=/dev/sda1,Ebs={VolumeSize=$HACK_DISK_GB,VolumeType=gp3,DeleteOnTermination=true}" \
     --metadata-options HttpTokens=required \
@@ -61,4 +65,5 @@ else price="$(ondemand_price) on-demand"; fi
 echo "RUNNING: $id  $az_now  host: $host  ~\$${price}/h"
 echo "ssh:     HACK_GPU_HOST=$host infra/aws/ssh.sh"
 echo "LOG IT:  scripts/log.sh \"gpu up $id $HACK_TYPE ~\$${price}/h\""
+echo "First time on the box: git clone https://github.com/alerest285/hackathon-2026 && bash hackathon-2026/infra/gpu/bootstrap.sh"
 echo "It stops itself after $HACK_IDLE_MIN idle minutes. Stop it yourself with infra/aws/down.sh."

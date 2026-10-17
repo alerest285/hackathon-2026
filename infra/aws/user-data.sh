@@ -3,7 +3,7 @@
 # Gives every member in members.txt ssh access via their GitHub keys, installs ffmpeg,
 # and arms the idle auto-stop that protects the budget.
 set -eux
-for u in __MEMBERS__; do curl -fsSL "https://github.com/$u.keys" >> /home/ubuntu/.ssh/authorized_keys || true; done
+for u in __MEMBERS__; do [ "$u" = none ] && continue; curl -fsSL "https://github.com/$u.keys" >> /home/ubuntu/.ssh/authorized_keys || true; done
 sort -u -o /home/ubuntu/.ssh/authorized_keys /home/ubuntu/.ssh/authorized_keys
 chown ubuntu:ubuntu /home/ubuntu/.ssh/authorized_keys; chmod 600 /home/ubuntu/.ssh/authorized_keys
 apt-get update -y && apt-get install -y ffmpeg tmux git

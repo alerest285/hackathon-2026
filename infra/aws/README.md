@@ -12,11 +12,12 @@ A project can only create resources in its one region. Decision 04 has the reaso
 
 | # | Step | State (17.10) |
 |---|---|---|
+| 0 | SSH: `up.sh` imports your `~/.ssh/id_ed25519.pub` as the EC2 key. alerest285 has no keys on GitHub, so this is how you get in. Teammates: their GitHub keys via `members.txt` | built in |
 | 1 | Sign in: `aws login --profile hackathon` (browser). Credentials last 12 h and renew for 90 days without the browser | done |
 | 2 | AWS Agent Toolkit: `aws configure agent-toolkit --yes --region us-east-1 --profile hackathon`, then add `"env": {"AWS_MCP_PROXY_PROFILES": "hackathon"}` to each `aws-mcp` entry | done on alerest285's Mac |
 | 3 | **Upgrade the project to the paid plan** (AWS Settings → Billing). The free plan denies every spot launch, which was checked with `--dry-run` | owner's step |
 | 4 | **GPU quota.** It was 0. Requested 16 vCPU for "All P Spot Instance Requests" (L-7212CCBC) and "Running On-Demand P instances" (L-417A185B). AWS allows two open requests at a time | pending AWS review |
-| 5 | Spend guard: set a **$150 spend limit** in AWS Settings (it pauses the project when reached), plus `infra/aws/budget.sh you@mail` for email alerts | owner's step |
+| 5 | Spend guard: budget `hackathon-gpu` $150/month, alerts at 50/80/100 % + forecast to alerest285's mail (`infra/aws/budget.sh`). After the upgrade, also set a **$150 spend limit** in AWS Settings (it pauses the project when reached) | budget done; spend limit after upgrade |
 | 6 | Teammates: invite them as **team members** in AWS Settings (by email) only if they must run AWS commands. For ssh-only access, adding their GitHub login to `members.txt` is enough | as needed |
 
 Check the state any time:
@@ -41,8 +42,10 @@ To fall back to on-demand ($7.36/h in eu-north-1): `HACK_MARKET=ondemand infra/a
 | `infra/aws/cost.sh` | Spot prices, instance state, month-to-date spend |
 | `infra/aws/destroy.sh` | End of the hackathon: cancels the spot request, terminates, deletes the disk |
 
-On the box, first time: `git clone <this repo> && bash hackathon-2026/infra/gpu/bootstrap.sh`,
-then `bash hackathon-2026/infra/gpu/smoke-droid.sh`. Serve inside tmux with `bash infra/gpu/serve.sh`.
+On the box, first time: `git clone https://github.com/alerest285/hackathon-2026 && bash hackathon-2026/infra/gpu/bootstrap.sh`.
+The FLUX weights are **gated** (auto-approved): accept the license on each `black-forest-labs/flux-3-action-*` page with your
+Hugging Face account, then run `uv run hf auth login` on the box. bootstrap.sh checks access and tells you what is missing.
+Then the SO-101 selftest (T10), or `bash hackathon-2026/infra/gpu/smoke-droid.sh` for the DROID check. Serve inside tmux with `bash infra/gpu/serve.sh`.
 
 ## Budget guards
 
