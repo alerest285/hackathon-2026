@@ -1,4 +1,4 @@
-# console/: drive the SO-101 with FLUX from a browser page
+# console/: drive the arm (SO-100 / SO-101) with FLUX from a browser page
 
 One command on the Mac that has the arm and both cameras plugged in:
 
@@ -19,6 +19,32 @@ installs `robot/`'s environment on first use, and opens **http://127.0.0.1:8765*
 | camera previews | scene (fixed) must look at the workspace; wrist must be on the gripper. If they are swapped, swap `--scene`/`--wrist` |
 | joint table | measured, commanded, and the **range the checkpoint was trained on**. Red rows are outside it |
 
+## Recording (native LeRobot format)
+
+Every run is recorded as a **LeRobotDataset** episode, the same layout `lerobot-record` writes:
+`observation.images.scene` / `observation.images.wrist` (480×640 video), `observation.state` and `action` (6 × `<joint>.pos`,
+action = the command sent, or that a dry run would send), the instruction as the task, 30 fps, robot type `so100_follower`
+(`--robot-type so101_follower` for an SO-101; LeRobot drives both with the same class).
+
+- **Run (new episode)** starts an episode, and **Next instruction** continues the same one (multi-step Hanoi = one episode).
+- **Save: success / Save: fail / Discard** closes it. The verdict goes to `console_episodes.jsonl` next to the dataset.
+- Ctrl-C saves the open episode as `unlabeled` and finalizes the dataset (tested: it loads with `LeRobotDataset`).
+- Location: `~/hackathon-data/so100_hanoi_flux_zeroshot` (repo_id `alerest285/so100_hanoi_flux_zeroshot`, local only).
+  Push when the team agrees: `huggingface-cli upload ... --repo-type dataset`. `--no-record` turns recording off.
+
+## Leader arm: resets and demonstrations (native LeRobot)
+
+Stop the console first (only one program can own the follower's port), then:
+
+```sh
+console/teleop.sh move   --follower /dev/tty.usbmodemF --leader /dev/tty.usbmodemL --scene 0 --wrist 1     # move it by hand
+console/teleop.sh record --follower ... --leader ... --task "pick up the small disk and place it on the middle peg" --episodes 10
+```
+
+This is plain `lerobot-teleoperate` / `lerobot-record` with `so100_follower` + `so100_leader` and the **same camera names**, so
+demos (`~/hackathon-data/so100_hanoi_demos`) and zero-shot runs share one format for milestone 4 (LoRA).
+Override the types with `ROBOT_TYPE=so101_follower TELEOP_TYPE=so101_leader`.
+
 Ctrl-C in the terminal stops the console and the tunnel. The arm keeps its last command (torque stays on).
 **The physical power switch is the real emergency stop.** Keep a hand on it during `--live` runs.
 
@@ -27,7 +53,8 @@ Ctrl-C in the terminal stops the console and the tunnel. The arm keeps its last 
 Follow `robot/README.md` steps 1–4 (from the T06 agent):
 
 1. `cd robot && uv run --python 3.13 lerobot-find-port`, then find the cameras: `uv run --python 3.13 python camera_check.py`.
-2. Calibrate: `uv run --python 3.13 lerobot-calibrate --robot.type=so101_follower --robot.port=<port> --robot.id=so101_hanoi`.
+2. Calibrate the follower (and the leader for teleop): `uv run --python 3.13 lerobot-calibrate --robot.type=so100_follower --robot.port=<port> --robot.id=so101_hanoi`
+   (the id is just the calibration file name; keep `so101_hanoi` so the console and teleop share it).
 3. **Check the calibration against the model's training range.** Run the console in dry run, put the arm in its rest pose,
    and read the joint table. The checkpoint was trained with shoulder_lift ≈ 85…184° and elbow_flex ≈ 61…179°
    (server `hello`, `state_q01`/`state_q99`). If your values are far outside (red rows), the calibration convention differs

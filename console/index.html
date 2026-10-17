@@ -42,6 +42,13 @@
       <button class="stop" onclick="post('/pause')" title="hold position, no new requests">Pause / hold</button>
       <span class="mute">Ctrl+Enter runs. Pause holds the arm; the physical power switch is the real stop.</span>
     </div>
+    <div class="bar" style="margin-top:8px">
+      <span class="mute">End episode:</span>
+      <button onclick="post('/episode/success')">Save: success</button>
+      <button onclick="post('/episode/fail')">Save: fail</button>
+      <button onclick="post('/episode/discard')">Discard</button>
+      <span id="rec" class="mute"></span>
+    </div>
     <div class="bar presets" id="presets" style="margin-top:8px"></div>
     <div id="error" class="err"></div>
   </div>
@@ -96,6 +103,10 @@ async function tick() {
     for (const [k,v] of Object.entries(st)) if (typeof v !== 'object') kv[k] = v;
     $('kv').innerHTML = Object.entries(kv).map(([k,v]) => `<div class="mute">${k}</div><div>${fmt(v)}</div>`).join('');
     $('hist').innerHTML = (s.history||[]).slice().reverse().map(h => `${h.t} ${h.reset?'run':'next'}: ${h.task}`).join('<br>') || 'none yet';
+    const r = s.recorder;
+    $('rec').textContent = !r ? 'recording off (--no-record)' : (s.recording ? 'REC ' : 'not recording ') +
+      `episode ${r.episode_frames} frames · ${r.episodes_saved} saved this session · ${r.root}` + (r.error ? ' · ERROR ' + r.error : '') + (r.dropped ? ` · ${r.dropped} dropped` : '');
+    $('rec').style.color = s.recording ? 'var(--bad)' : '';
     if (s.error) $('error').textContent = s.error;
     else if ((s.out_of_range||[]).length) $('error').textContent = 'Outside the range the model was trained on: ' + s.out_of_range.join(', ') + '. Your arm calibration likely differs from BFL\'s; zero-shot will not work until it matches (see console/README.md).';
   } catch (e) { $('conn').textContent = 'console not reachable'; }

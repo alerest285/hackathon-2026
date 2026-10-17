@@ -25,6 +25,7 @@ import os  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 ROBOT_DIR = Path(os.environ.get("HACK_ROBOT_DIR", ROOT / "robot"))  # override only for testing another checkout
 sys.path.insert(0, str(ROBOT_DIR))
+sys.path.insert(0, str(Path(__file__).parent))
 
 import cv2  # noqa: E402  (robot/ venv ships opencv-python-headless)
 import numpy as np  # noqa: E402
@@ -52,6 +53,13 @@ def parse_args(argv=None):
     p.add_argument("--fake-robot", action="store_true")
     p.add_argument("--fake-cameras", action="store_true")
     p.add_argument("--fake-net", nargs="?", const="pickplace", choices=("hold", "sine", "pickplace"), default=None)
+    p.add_argument("--robot-type", default="so100_follower", choices=("so100_follower", "so101_follower"),
+                   help="written into the recording's metadata; LeRobot drives both with the same class")
+    p.add_argument("--no-record", action="store_true", help="do not record runs as a LeRobot dataset")
+    p.add_argument("--record-repo", default="alerest285/so100_hanoi_flux_zeroshot",
+                   help="LeRobot repo_id of the recording (stays local until you push it)")
+    p.add_argument("--record-root", type=Path, default=None,
+                   help="default: ~/hackathon-data/<repo name> (zero-shot runs; teleop demos go to a separate dataset)")
     a = p.parse_args(argv)
     if not a.fake_robot and not a.port:
         p.error("--port is required unless --fake-robot (find it with: uv run --python 3.13 lerobot-find-port)")
@@ -78,11 +86,23 @@ class Console:
         self.history: list[dict] = []  # instructions sent, newest last
         self.started = False
         self.error = None
+        self.full: dict = {}  # newest full-resolution BGR frame per camera, for recording
+        self.recording = False  # True between Run/Next and Pause/Save/Discard
+        self.recorder = None
+        if not a.no_record:
+            from recorder import Recorder
+
+            root = a.record_root or Path("~/hackathon-data").expanduser() / a.record_repo.split("/")[-1]
+            self.recorder = Recorder(a.record_repo, root, robot_type=a.robot_type)
         self.loop.add_observer(self._on_tick)
         self.loop.add_frame_tap(self._on_frame)
 
     # called on the control thread every tick: keep it cheap
     def _on_tick(self, info):
+        if self.recorder and self.recording and info.task:
+            sc, wr = self.full.get("scene"), self.full.get("wrist")
+            if sc is not None and wr is not None:
+                self.recorder.add(info.state, info.cmd, sc, wr, info.task)
         with self.lock:
             self.info = info
             if info.chunk:
@@ -92,6 +112,7 @@ class Console:
 
     # called on camera threads with full-resolution BGR frames: encode at most 6 Hz per camera
     def _on_frame(self, cam, frame_bgr, t):
+        self.full[cam] = frame_bgr
         now = time.monotonic()
         if now - self._last_enc.get(cam, 0.0) < 0.16:
             return
@@ -120,6 +141,8 @@ class Console:
                       lateness_ms=round(float(info.lateness_ms), 1),
                       frame_age_ms={k: round(float(v), 0) for k, v in (info.frame_age_ms or {}).items()})
         st["last_chunk"] = chunk
+        st["recording"] = self.recording
+        st["recorder"] = self.recorder.status() if self.recorder else None
         # The checkpoint was trained on one arm calibration. Joints far outside its q01..q99 range mean ours differs,
         # and zero-shot cannot work until the calibration (or an offset) matches.
         hello = getattr(self.loop, "hello", None) or {}
@@ -177,12 +200,23 @@ def make_handler(con: Console):
                         return self._json({"error": "empty instruction"}, 400)
                     con.start()
                     reset = bool(body.get("reset", True))
+                    if reset and con.recorder and con.recorder.frames:
+                        con.recorder.save(None)  # a new episode starts: close the previous one, unlabeled
                     con.loop.set_task(task, reset_history=reset)
+                    con.recording = True
                     con.history.append({"t": time.strftime("%H:%M:%S"), "task": task, "reset": reset})
                     con.error = None
                     return self._json({"ok": True})
                 if self.path == "/pause":
                     con.loop.pause() if con.started else None
+                    con.recording = False
+                    return self._json({"ok": True})
+                if self.path in ("/episode/success", "/episode/fail", "/episode/discard"):
+                    con.loop.pause() if con.started else None
+                    con.recording = False
+                    if con.recorder:
+                        verdict = self.path.rsplit("/", 1)[1]
+                        con.recorder.discard() if verdict == "discard" else con.recorder.save(verdict)
                     return self._json({"ok": True})
                 if self.path == "/connect":
                     con.start()
@@ -202,7 +236,17 @@ def main(argv=None):
         input("Press ENTER to continue, Ctrl-C to abort. ")
     con = Console(a)
     srv = ThreadingHTTPServer(("127.0.0.1", a.http_port), make_handler(con))
-    print(f"arm console on http://127.0.0.1:{a.http_port}  ({'LIVE' if a.live else 'dry run'}). Ctrl-C stops; the arm holds.")
+    # Installed last: libraries imported above may set their own SIGINT handler and swallow Ctrl-C, which
+    # would leave the dataset unfinalized. Ctrl-C / SIGTERM shut the HTTP server down; cleanup runs below.
+    import signal
+
+    def _stop(signum, frame):
+        print(f"\nsignal {signum}: stopping ...", flush=True)
+        threading.Thread(target=srv.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
+    print(f"arm console on http://127.0.0.1:{a.http_port}  ({'LIVE' if a.live else 'dry run'}). Ctrl-C stops; the arm holds.", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
@@ -211,6 +255,10 @@ def main(argv=None):
         srv.server_close()
         if con.started:
             con.loop.stop()
+        if con.recorder:
+            print("saving the open episode and finalizing the dataset ...", flush=True)
+            con.recorder.close()
+            print(f"dataset finalized: {con.recorder.root}", flush=True)
         print("stopped: last command stays the motors' goal (arm holds), port closed with torque on")
 
 

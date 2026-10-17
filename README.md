@@ -92,7 +92,9 @@ console/start.sh --port /dev/tty.usbmodemXXXX --scene 0 --wrist 1      # dry run
 ```
 
 A page opens at **http://127.0.0.1:8765**. Type an instruction (or pick a preset), press **Run**, and watch both cameras
-and the joints. Use **Next instruction** for the next Hanoi step, and **Pause** to hold. First time on an arm: follow
+and the joints. Every run is recorded as a native **LeRobotDataset** episode. Mark it **Save: success / fail** on the page.
+The leader arm (resets, demonstrations) uses LeRobot's own tools through `console/teleop.sh`. The arm is an **SO-100**; LeRobot
+drives it with the same code as the SO-101. Use **Next instruction** for the next Hanoi step, and **Pause** to hold. First time on an arm: follow
 [`console/README.md`](console/README.md) "Before the first live run". Above all, check that your calibration falls inside the
 range the model was trained on. The page marks joints outside it in red.
 
