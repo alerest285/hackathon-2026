@@ -1,7 +1,7 @@
 ---
 id: T01
 title: Pick the zero-shot task and embodiment
-status: doing
+status: done
 owner: alerest285
 depends: 
 paths:
@@ -25,3 +25,4 @@ agents can prepare the comparison (hardware we can access, the cameras each need
 
 ## Notes and handoffs (append, newest last)
 
+- 2026-10-17T12:18Z · alerest285 · done: decision 05; project.md open question 1 points to it
