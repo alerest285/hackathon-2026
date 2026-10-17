@@ -75,8 +75,9 @@ warm_venv() {
   echo "venv warmed into page cache in $(( $(date +%s) - t0 )) s"
 }
 in_tmux() {  # <session> <cmd file> <log>: EXIT carries the trainer's own status, not tee's
-  local envs=(); [ -n "${WANDB_API_KEY:-}" ] && envs=(-e "WANDB_API_KEY=$WANDB_API_KEY")
-  tmux new-session -d "${envs[@]}" -s "$1" "bash $2 2>&1 | tee $3; echo EXIT \${PIPESTATUS[0]} >> $3"
+  # The W&B key reaches the session by name (update-environment copies it from this shell), never as an argv value.
+  [ -n "${WANDB_API_KEY:-}" ] && { tmux start-server; tmux set-option -ga update-environment " WANDB_API_KEY"; }
+  tmux new-session -d -s "$1" "bash $2 2>&1 | tee $3; echo EXIT \${PIPESTATUS[0]} >> $3"
   echo "tmux attach -t $1   (detach: Ctrl-b d).  Follow: tail -f $3 | grep -E 'step|loss|Error|EXIT'"
 }
 
