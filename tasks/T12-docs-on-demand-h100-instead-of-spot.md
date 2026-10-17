@@ -1,8 +1,8 @@
 ---
 id: T12
 title: Docs: on-demand H100 instead of spot
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - docs/project.md
