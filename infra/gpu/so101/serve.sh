@@ -5,11 +5,19 @@
 #   bash infra/gpu/so101/serve.sh                            serve: engine flux-action, port 8000
 #   bash infra/gpu/so101/serve.sh --engine lerobot --compile [any other server.py flag]
 # Interpreter: flux-action uses ${FLUX_DIR:-~/flux-action}/.venv (built by infra/gpu/bootstrap.sh),
-# lerobot uses ${LEROBOT_DIR:-~/lerobot-flux3}/.venv (bootstrap-lerobot.sh), fake uses whichever exists.
+# lerobot uses ${LEROBOT_DIR:-~/lerobot-flux3}/.venv (bootstrap-lerobot.sh or train/setup.sh), fake uses whichever
+# exists. Without FLUX_DIR / LEROBOT_DIR, an env missing under ~ is looked up on Runpod's /workspace volume, where
+# decision 08's pod and train/setup.sh keep them.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLUX_PY="${FLUX_DIR:-$HOME/flux-action}/.venv/bin/python"
 LEROBOT_PY="${LEROBOT_DIR:-$HOME/lerobot-flux3}/.venv/bin/python"
+if [ -z "${FLUX_DIR:-}" ] && [ ! -x "$FLUX_PY" ] && [ -x /workspace/flux-action/.venv/bin/python ]; then
+  FLUX_PY=/workspace/flux-action/.venv/bin/python
+fi
+if [ -z "${LEROBOT_DIR:-}" ] && [ ! -x "$LEROBOT_PY" ] && [ -x /workspace/lerobot-flux3/.venv/bin/python ]; then
+  LEROBOT_PY=/workspace/lerobot-flux3/.venv/bin/python
+fi
 
 engine=flux-action
 prev=""
