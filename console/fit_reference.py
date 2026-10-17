@@ -21,6 +21,7 @@ stored in the existing mapping, without the arm.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 import time
@@ -86,19 +87,33 @@ def travel(calibration: Path):
     return out
 
 
-def write_outputs(A, B, meta, out: Path, limits_out: Path, calibration: Path):
-    q01, q99 = np.asarray(MODEL_Q01), np.asarray(MODEL_Q99)
-    jm = JointMap((q01 - B) / A, (q99 - B) / A, q01, q99, meta=meta)  # two points on old = A * ours + B
+def check_refs(**refs):
+    """Each reading must be 6 finite channels in a plausible range, or nothing is written."""
+    for name, r in refs.items():
+        r = np.asarray(r, float)
+        if r.shape != (6,) or not np.isfinite(r).all() or np.abs(r[:5]).max() > 200 or not -10 <= r[5] <= 110:
+            sys.exit(f"Not written: the {name} reading is invalid: {np.round(r, 1).tolist()}")
+
+
+def limits_for(A, B, calibration: Path, rest):
+    """The dataset's range +-LIMIT_MARGIN in our degrees, cut to our travel. Exits unless every joint keeps a
+    non-empty interval that holds the rest pose (within the edge margin)."""
+    lo, hi = (DATASET_MIN - LIMIT_MARGIN - B[:5]) / A[:5], (DATASET_MAX + LIMIT_MARGIN - B[:5]) / A[:5]
+    limits = {}
+    for i, (j, a, b, (t_lo, t_hi)) in enumerate(zip(JOINTS[:5], lo, hi, travel(calibration))):
+        a, b = sorted([float(a), float(b)])
+        lim = [round(max(a, t_lo), 1), round(min(b, t_hi), 1)]
+        if not lim[0] < lim[1] or not lim[0] - 2 * EDGE_MARGIN <= rest[i] <= lim[1] + 2 * EDGE_MARGIN:
+            sys.exit(f"Not written: {j} limits {lim} are empty or exclude the rest pose {rest[i]:.1f}")
+        limits[j] = lim
+    return limits
+
+
+def save_outputs(jm: JointMap, limits: dict, out: Path, limits_out: Path):
     if out.exists():
         out.rename(out.with_name(f"{out.stem}.before-{time.strftime('%Y%m%dT%H%M%S')}.json"))
     jm.save(out)
-    lo, hi = (DATASET_MIN - LIMIT_MARGIN - B[:5]) / A[:5], (DATASET_MAX + LIMIT_MARGIN - B[:5]) / A[:5]
-    limits = {}
-    for j, a, b, (t_lo, t_hi) in zip(JOINTS[:5], lo, hi, travel(calibration)):
-        a, b = sorted([float(a), float(b)])
-        limits[j] = [round(max(a, t_lo), 1), round(min(b, t_hi), 1)]
     limits_out.write_text(json.dumps(limits, indent=1))
-    return jm, limits
 
 
 def main():
@@ -116,8 +131,10 @@ def main():
     robot = SO101Follower(SO101FollowerConfig(port=a.port, id=a.robot_id, use_degrees=True))
     if not Path(robot.calibration_fpath).is_file():
         sys.exit(f"no calibration file {robot.calibration_fpath}: pass the --robot-id you calibrated with")
-    if a.from_saved:
+    if a.from_saved:  # the readings only mean something under the calibration they were taken with
         saved = json.loads(a.out.read_text())["meta"]
+        if saved.get("robot_id") != a.robot_id or saved.get("calibration_sha256") not in (None, sha256(robot.calibration_fpath)):
+            sys.exit(f"Not written: {a.out} was fitted for {saved.get('robot_id')!r} under another calibration file")
         rest, right, straight = (np.asarray(saved[k], float) for k in ("rest_ours", "right_ours", "straight_ours"))
         return report(a, robot.calibration_fpath, rest, right, straight)
     bus = robot.bus
@@ -150,19 +167,28 @@ def main():
     report(a, robot.calibration_fpath, rest, right, straight)
 
 
+def sha256(path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
 def report(a, calibration, rest, right, straight):
+    check_refs(rest=rest, right=right, straight=straight)
     A, B, notes, checks = fit(rest, right, straight)
     if "unchecked" in checks.values() and not a.accept_unchecked:
         sys.exit("\n".join(notes) + "\nNot written: a hand check was inconclusive. Redo it, or pass --accept-unchecked.")
+    limits = limits_for(A, B, calibration, rest)
     # Hand-checked: pan and wrist_flex signs, the wrist_flex offset (straight = 0). From the rest pose and issue #2 only:
-    # the other offsets and the lift/elbow/wrist_roll signs. Not a validation of the whole map.
+    # the other offsets and the lift/elbow/wrist_roll signs. The rest pose matches the dataset by construction.
     meta = {"method": "old LeRobot SO-100 convention, rest-anchored (console/fit_reference.py, T21)", "robot_id": a.robot_id,
+            "status": "experimental: not a physical validation of every joint", "calibration_sha256": sha256(calibration),
             "checks": checks, "not_hand_checked": ["shoulder_lift sign (rest geometry)", "elbow_flex sign (rest geometry)",
                                                    "wrist_roll sign (issue #2)", "pan/lift/elbow/wrist_roll offsets (rest)"],
             "sign": np.sign(A[:5]).tolist(), "offset_deg": np.round(B[:5], 2).tolist(), "rest_ours": np.round(rest, 2).tolist(),
             "right_ours": np.round(right, 2).tolist(), "straight_ours": np.round(straight, 2).tolist(), "notes": notes,
             "fitted_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
-    jm, limits = write_outputs(A, B, meta, a.out, a.limits_out, calibration)
+    q01, q99 = np.asarray(MODEL_Q01), np.asarray(MODEL_Q99)
+    jm = JointMap((q01 - B) / A, (q99 - B) / A, q01, q99, meta=meta)  # two points on old = A * ours + B
+    save_outputs(jm, limits, a.out, a.limits_out)
     print("\n" + "\n".join(notes))
     print(f"\n{'joint':14s} {'sign':>4s} {'offset':>7s}   {'ours rest':>9s} -> {'model':>6s} (dataset rest)   limits, our degrees")
     for i, j in enumerate(JOINTS):

@@ -17,7 +17,9 @@ wrist_flex checked by hand, offsets from the dataset's rest pose. Writes the con
 
 ## Done when
 
-- [ ] `console/fit_reference.py` on the real arm: rest maps within 5 deg of the dataset rest, pan/wrist checks agree with the signs
+- [x] `console/fit_reference.py` on the real arm: pan and wrist_flex hand checks conclusive (pan +43 deg to the robot's right, straight
+      wrist +4 old deg); the script refuses to write on an inconclusive check or invalid reading. The rest-pose match is by construction
+      and validates nothing; lift/elbow/wrist_roll signs and their offsets are priors (rest geometry, issue #2): the map stays experimental
 - [ ] console dry run with `--limits ~/hackathon-data/limits.json`: no out-of-range joint, chunks arrive, first commands move the
       way the prompt asks (supervised look, not a validation of the map)
 
