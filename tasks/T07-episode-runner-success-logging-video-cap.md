@@ -1,8 +1,8 @@
 ---
 id: T07
 title: Episode runner, success logging, video capture
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: T01
 paths:
   - eval/**
