@@ -1,7 +1,7 @@
 ---
 id: T26
 title: teleop.sh: resume + episode/reset time
-status: done
+status: doing
 owner: alerest285
 depends: 
 paths:
