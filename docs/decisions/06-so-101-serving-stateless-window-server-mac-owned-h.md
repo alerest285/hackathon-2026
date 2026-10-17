@@ -1,6 +1,6 @@
 # 06. SO-101 serving: stateless window server, Mac-owned history, chunk prefetch
 
-**Date:** 2026-10-17 · **Status:** accepted, numbers pending (T10) · **Author:** alerest285 (claude-code-hanoi)
+**Date:** 2026-10-17 · **Status:** accepted, measured 17.10 (below) · **Author:** alerest285 (claude-code-hanoi)
 
 ## Context
 
@@ -54,3 +54,20 @@ freeze the arm for compute + round trip after every 1.07 s slice.
 - Refines decision 05: between Hanoi steps the queued actions are dropped and the history is kept (LeRobot `set_task`
   behaviour). A full reset happens at an episode start and after an intervention.
 - The server runs anywhere with Linux + CUDA + the flux-action env, so track compute or another GPU host can stand in for AWS.
+
+## Measured (2026-10-17, Runpod H100, decision 08)
+
+| What | Number | Source |
+|---|---|---|
+| Server self-test, eager, 30 plans | p50 514 ms, p95 549 ms, 15.8 GiB | claude-code, log 14:04Z and 15:31Z |
+| `--compile`, same sampling (Euler 4, guidance 3/3) | p50 351 ms, p95 398 ms; first plan 66 s (compile); a new caption's first plan about 5 s afterwards | log 15:31Z; deployed 15:30:53Z |
+| `--guidance 1 1` (not deployed: changes the released behaviour) | eager 296/302 ms, with compile 250/298 ms | log 15:31Z |
+| Turnaround, fake arm through the tunnel, eager | 560–590 ms | log 14:04Z |
+| Turnaround on Saad's link, eager | p50 745 ms (network p50 179 ms), 18 starved ticks in 10 plans | Saad's agent, chat 14:36Z |
+
+- **Inside the budget with `--compile`:** the 533 ms (16-tick) budget holds on a short link (351 ms compute + network + about
+  25 ms frame age). With one request in flight, prefetch stays stall-free up to about 700 ms of turnaround, which covers
+  Saad's link once compiled (about 550–600 ms expected).
+- **The pin is not a concern:** the Hub's `main` (0713a7af, 14.10) and the pin c9e13b2a carry byte-identical weights, config,
+  statistics and processors. Only README, LICENSE and a demo video changed (HF tree diff, 15:39Z).
+
