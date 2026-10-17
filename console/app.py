@@ -120,6 +120,10 @@ class Console:
 
     # called on the control thread every tick: keep it cheap
     def _on_tick(self, info):
+        if self.recorder and self.recording and info.k % 300 == 0 and self.recorder.free_mb() < 2000:
+            self.recording = False  # never fill the disk: stop recording below 2 GB free, keep the episode so far
+            self.recorder.save("stopped_low_disk")
+            self.error = "recording stopped: less than 2 GB free on this disk"
         if self.recorder and self.recording and info.task:
             sc, wr = self.full.get("scene"), self.full.get("wrist")
             if sc is not None and wr is not None:

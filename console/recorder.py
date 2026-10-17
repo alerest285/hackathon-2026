@@ -66,6 +66,11 @@ class Recorder:
         self._t.start()
 
     # -- producers (any thread) -------------------------------------------------------------
+    def free_mb(self) -> int:
+        import shutil
+
+        return int(shutil.disk_usage(self.root).free / 1e6)
+
     def add(self, state, action, scene_bgr, wrist_bgr, task: str):
         try:
             self.q.put_nowait(("frame", np.asarray(state, np.float32).copy(), np.asarray(action, np.float32).copy(),
@@ -86,7 +91,7 @@ class Recorder:
         self._t.join(timeout=120)
 
     def status(self) -> dict:
-        return {"repo_id": self.repo_id, "root": str(self.root), "episode_frames": self.frames,
+        return {"repo_id": self.repo_id, "root": str(self.root), "episode_frames": self.frames, "free_mb": self.free_mb(),
                 "episodes_saved": self.saved, "dropped": self.dropped, "queue": self.q.qsize(),
                 "error": self.last_error}
 

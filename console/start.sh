@@ -21,6 +21,20 @@ say() { echo "[start] $*"; }
 [ -d "$ROBOT_DIR/so101_client" ] || die "robot/ client not found at $ROBOT_DIR. Run 'git pull' (it lands with T06)."
 command -v uv >/dev/null || die "uv missing: curl -LsSf https://astral.sh/uv/install.sh | sh"
 
+# Disk hygiene: the old recorder (before 8e303ef) left per-frame PNGs in <dataset>/images; they are temporary
+# files LeRobot never needs again. Remove them on every start and say how much came back.
+data="${HACK_DATA:-$HOME/hackathon-data}"
+if [ -d "$data" ]; then
+  freed=$(find "$data" -type d -name images -prune -exec du -sk {} + 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')
+  if [ "${freed:-0}" -gt 0 ]; then
+    find "$data" -type d -name images -prune -exec rm -rf {} + 2>/dev/null || true
+    say "disk: removed ${freed} MB of leftover recording images under $data"
+  fi
+fi
+free_mb=$(df -Pm "$HOME" | awk 'NR==2 {print $4}')
+say "disk: ${free_mb} MB free"
+case " $* " in *" --record "*) [ "$free_mb" -ge 5000 ] || die "only ${free_mb} MB free: not recording. Free space (console/README.md 'Disk') or drop --record." ;; esac
+
 say "1/5 ssh to pod $POD_HOST:$POD_SSH_PORT"
 "${SSH[@]}" true 2>/dev/null || die "cannot ssh to the pod. Is your public key on your GitHub account and installed on the pod?
   Did the pod restart (new port)? Check the Runpod console, then: POD_SSH_PORT=<port> console/start.sh ..."

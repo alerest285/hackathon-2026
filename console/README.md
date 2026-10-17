@@ -91,3 +91,11 @@ server. Tested 17.10: 690 ticks at 30 Hz, 36 chunks accepted, 0 errors, turnarou
 | page says "console not reachable" | the terminal running `start.sh` stopped; restart it |
 
 Settings: `POD_HOST`, `POD_SSH_PORT`, `LOCAL_PORT` (default 18000; local 8000 is often taken by other tools).
+
+## Disk
+
+Recording is **off** unless you pass `--record`. When on, it streams straight into two mp4 files (about 100 KB per second), with
+no per-frame images. `start.sh` deletes any leftover `images/` folders from the old recorder at every start, prints the free space,
+refuses `--record` below 5 GB free, and the console stops recording by itself below 2 GB. To see what uses space:
+`du -sh ~/hackathon-data/* robot/runs ~/.cache/uv ~/.cache/huggingface`. `uv cache prune` drops unused package downloads.
+
