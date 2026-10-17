@@ -1,0 +1,31 @@
+[project]
+name = "so101-client"
+version = "0.1.0"
+description = "Mac-side SO-101 client for the so101.v1 policy server: cameras, joint bus, 8-tick history, chunk prefetch, 30 Hz loop."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "lerobot[feetech]==0.6.1",
+    "numpy",
+    # LeRobot 0.6.1 already requires the headless OpenCV build. Adding opencv-python as well would install
+    # two wheels that both ship the cv2 module. Headless keeps VideoCapture (AVFoundation) and imencode.
+    "opencv-python-headless",
+    "websockets>=13",
+    "msgpack",
+    "pillow",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "so101_client"
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"

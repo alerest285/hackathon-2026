@@ -1,0 +1,31 @@
+[project]
+name = "hanoi-eval"
+version = "0.1.0"
+description = "Tower of Hanoi sequencer and episode runner for FLUX 3 Action on the SO-101 (task T07)."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "so101-client",
+    "numpy",
+    # so101-client pulls LeRobot 0.6.1, which requires the headless OpenCV build. opencv-python next to it
+    # would install a second wheel with the same cv2 module. Headless keeps VideoWriter (FFmpeg) for the mp4s.
+    "opencv-python-headless",
+]
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.uv.sources]
+so101-client = { path = "../robot", editable = true }
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "hanoi_eval"
+module-root = ""
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"

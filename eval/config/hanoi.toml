@@ -1,0 +1,69 @@
+# Tower of Hanoi on the SO-101 (decision 05). Piece and place names live here, never in code.
+# Every field is checked on load (hanoi_eval/config.py) and unknown keys are refused.
+# CLI flags override: --episodes --mode --protocol --label --server --port --robot-id --scene --wrist.
+
+# Pieces, largest first. Rename them by colour at the venue, e.g. "large blue disk".
+pieces = ["large disk", "medium disk", "small disk"]
+start = "left"                 # the place that holds the tower at the start
+goal = "right"                 # the place the tower must end on
+# {piece} and {place} are required; {source} is the place the piece comes from.
+prompt = "pick up the {piece} and place it on the {place}"
+step_timeout_s = 30.0
+mode = "eval"                  # eval: the operator's key is the ground truth | demo: an auto end counts as success
+protocol = "strict"            # strict: an episode stops at its first failed step | recover: restore and retry
+max_retries = 2                # recover only: retries per step
+episodes = 10
+between_steps = "keep_history" # keep_history (decision 06) | reset_history (A/B only)
+label = "zero-shot"            # run directory suffix: eval/runs/<UTC stamp>-<label>
+
+[places]                       # logical place -> the words used in the prompt
+left = "left peg"
+middle = "middle peg"
+right = "right peg"
+
+[auto_end]                     # grasp -> release -> rest ends a step without a key
+enabled = true
+signal = "state"               # state: measured gripper | cmd: commanded gripper (use cmd for dry runs)
+closed_is = "low"              # which end of the gripper's 0..100 range is closed; depends on the calibration
+closed_threshold = 15.0        # at or past this the gripper counts as closed (set it above the value while holding a disk)
+open_threshold = 25.0          # at or past this it counts as open again
+min_hold_s = 0.5               # the grasp must not reopen for this long
+rest_s = 1.0                   # then the arm must rest this long
+rest_speed_deg_s = 10.0        # rest: every joint slower than this; one encoder step per tick is about 2.6 deg/s
+
+[loop]                         # robot/so101_client LoopConfig (dry_run comes from --live)
+mode = "prefetch"              # prefetch (decision 06) | sync (BFL's cadence, the A/B baseline)
+fps = 30.0
+period = 16
+crossfade = 6
+exec_horizon = 32
+chunk = 42
+step_max_deg = 6.0
+spin_margin_ms = 6.0
+# joint_limits = [[-110.0, 110.0], [-100.0, 100.0], [-100.0, 100.0], [-100.0, 100.0], [-160.0, 160.0]]
+
+[robot]
+port = ""                      # e.g. /dev/tty.usbmodem58760431541; required for a real arm (--port)
+id = "so101_follower"          # LeRobot calibration id (--robot-id)
+
+[cameras]
+scene = 0                      # OpenCV index or device path (--scene)
+wrist = 1                      # (--wrist)
+width = 640
+height = 480
+fps = 30
+image_size = 256               # frames sent to the server
+image_format = "jpeg"          # jpeg | png | raw
+jpeg_quality = 95
+
+[server]
+url = "ws://localhost:8000"    # through ssh -L 8000 (--server)
+
+[video]
+enabled = true                 # scene.mp4 and wrist.mp4 per episode, full resolution
+codec = "mp4v"
+fps = 30.0
+
+[sanity]                       # --sanity N runs every move N times
+moves = "all"                  # all: every piece x every ordered pair of places (18) | solution: the 7 moves of the solution
+repeats = 2
