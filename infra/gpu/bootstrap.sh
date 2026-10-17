@@ -8,7 +8,8 @@ NATTEN="natten==0.21.6+torch2100cu128"                                    # must
 DIR="${FLUX_DIR:-$HOME/flux-action}"
 
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv
-command -v ffmpeg >/dev/null || sudo apt-get install -y ffmpeg
+SUDO=""; [ "$(id -u)" = 0 ] || SUDO=sudo   # Runpod pods run as root without sudo; AWS DLAMI is ubuntu + sudo
+command -v ffmpeg >/dev/null || { $SUDO apt-get update -y && $SUDO apt-get install -y ffmpeg; }
 ffmpeg -hide_banner -decoders 2>/dev/null | grep -qi av1 || echo "WARNING: ffmpeg has no AV1 decoder; the recorded DROID sample needs one."
 command -v uv >/dev/null || { curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="$HOME/.local/bin:$PATH"; }
 
