@@ -1,8 +1,8 @@
 ---
 id: T09
 title: Lock overlap check must separate agents of one member
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - scripts/claim.sh
