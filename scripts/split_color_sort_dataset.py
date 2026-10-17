@@ -114,7 +114,9 @@ def convert(
                 for relative_index in range(start, end):
                     item = source[source_from + relative_index]
                     output.add_frame(_output_frame(item, features, video_keys, plan["tasks"][color]))
-                output.save_episode()
+                # Keep the converter inside its explicit thread cap. LeRobot's default parallel
+                # path starts one process per camera in addition to codec threads.
+                output.save_episode(parallel_encoding=False)
                 manifest_episodes.append(
                     {
                         "output_episode": len(manifest_episodes),
