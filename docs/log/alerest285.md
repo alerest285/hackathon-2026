@@ -52,3 +52,4 @@ Append-only, newest at the bottom. One line per event.
 - 2026-10-17T19:41Z alerest285 [T26] (claude-code) release (done): resume + timing flags
 - 2026-10-17T19:41Z alerest285 [T26] (claude-code) release (done): bash 3.2 fix
 - 2026-10-17T19:41Z alerest285 [T24] (claude-code) guidance A/B (hungho, 30 frames, mapped): 3/3 lift corr 0.84 err 15.8, plan 579 ms eager; 1/1 lift corr 0.18 err 15.5, plan 347 ms; other joints similar -> keep 3/3 + compile. Pod rmhs4cu2cejemv EXITED ~19:33Z: Runpod balance 0 (start -> 402).
+- 2026-10-17T20:14Z alerest285 [T23] (claude-train) Saad's LoRA live 20:08Z on wog1l8ijpl3jp5 (lora_so100_pick_cube_v1-b2x4-1017-200859-092d, 2500 updates, W&B e8co8cvy) after smoke PASS. Smoke: 0.9 s/microstep, 33 GB, first batch 116 s (was 8.6 min before workers 3 + venv warm-up), loss .209->.166 by step 8.
