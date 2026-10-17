@@ -1,8 +1,8 @@
 ---
 id: T02
 title: AWS account, GPU quota, budget alarm
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - infra/aws/README.md
