@@ -21,8 +21,9 @@ while [ $# -gt 0 ]; do case "$1" in
   *) echo "unknown option $1" >&2; exit 2 ;; esac; done
 [ -n "$follower" ] && [ -n "$leader" ] || { sed -n 2,13p "$0"; exit 2; }
 cams="{scene: {type: opencv, index_or_path: $scene, width: 640, height: 480, fps: 30}, wrist: {type: opencv, index_or_path: $wrist, width: 640, height: 480, fps: 30}}"
-common=(--robot.type="$rtype" --robot.port="$follower" --robot.id="$robot_id" --robot.cameras="$cams"
-        --teleop.type="$ttype" --teleop.port="$leader" --teleop.id="$leader_id")
+# use_degrees=true on both arms: joints in degrees, gripper 0..100, the units the model and the console use.
+common=(--robot.type="$rtype" --robot.port="$follower" --robot.id="$robot_id" --robot.use_degrees=true --robot.cameras="$cams"
+        --teleop.type="$ttype" --teleop.port="$leader" --teleop.id="$leader_id" --teleop.use_degrees=true)
 cd "$ROBOT_DIR"
 case "$mode" in
   move)   exec uv run --python 3.13 --with "lerobot[dataset]==0.6.1" lerobot-teleoperate "${common[@]}" --display_data=false ;;

@@ -55,7 +55,8 @@ class Recorder:
         self.frames = 0  # frames in the open episode
         self.task = None
         self.saved = 0
-        self.dropped = 0
+        self.dropped = 0  # total this session
+        self._ep_dropped = 0  # in the open episode
         self.last_error = None
         self._t = threading.Thread(target=self._run, name="console-recorder", daemon=True)
         self._t.start()
@@ -65,8 +66,10 @@ class Recorder:
         try:
             self.q.put_nowait(("frame", np.asarray(state, np.float32).copy(), np.asarray(action, np.float32).copy(),
                                scene_bgr, wrist_bgr, task))
-        except queue.Full:
+        except queue.Full:  # the writer fell behind: never block the control loop, but never hide it either
             self.dropped += 1
+            self._ep_dropped += 1
+            self.last_error = f"writer behind: {self.dropped} frames dropped (episode marked in console_episodes.jsonl)"
 
     def save(self, verdict: str | None = None):
         self.q.put(("save", verdict))
@@ -109,13 +112,12 @@ class Recorder:
                 elif kind == "discard":
                     if self.frames:
                         self.ds.clear_episode_buffer()
-                    self.frames, self.task = 0, None
+                    self.frames, self.task, self._ep_dropped = 0, None, 0
                 elif kind == "close":
                     if self.frames:
                         self._save(None)
                     self.ds.finalize()
                     return
-                self.last_error = None
             except Exception as e:  # keep the robot loop alive whatever the dataset does
                 self.last_error = f"{type(e).__name__}: {e}"
                 log.exception("recorder")
@@ -128,6 +130,6 @@ class Recorder:
         idx = self.ds.meta.total_episodes - 1
         with open(self.root / "console_episodes.jsonl", "a") as f:
             f.write(json.dumps({"episode_index": idx, "task": task, "frames": n, "seconds": round(n / self.fps, 1),
-                                "verdict": verdict or "unlabeled", "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S")}) + "\n")
+                                "verdict": verdict or "unlabeled", "dropped_frames": self._ep_dropped, "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S")}) + "\n")
         self.saved += 1
-        self.frames, self.task = 0, None
+        self.frames, self.task, self._ep_dropped = 0, None, 0
