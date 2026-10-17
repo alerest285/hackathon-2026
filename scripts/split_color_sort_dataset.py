@@ -76,6 +76,7 @@ def convert(
     video_backend: str,
     workers: int,
 ) -> dict:
+    from lerobot.configs.video import RGBEncoderConfig
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     if out_root.exists():
@@ -103,6 +104,9 @@ def convert(
         use_videos=True,
         image_writer_threads=workers,
         encoder_threads=workers,
+        # H.264 is LeRobot-native, broadly decodable, and much faster than re-encoding
+        # these already-lossy source videos to AV1 a second time.
+        rgb_encoder=RGBEncoderConfig(vcodec="h264", crf=23, preset="veryfast"),
         video_backend=video_backend,
     )
     video_keys = set(source.meta.video_keys)
