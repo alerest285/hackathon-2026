@@ -18,7 +18,18 @@ The next live run waits for the calibration check below.
 | safety | T21 `limits.json` (native), `--step-max 3`, `--live` |
 | server | eager, 508 ms p50 per plan; turnaround p50 745 ms on Saad's link (network p50 179 ms); 18 starved ticks in the dry run before |
 
-Forensics from Saad's agent (per-joint motion, map file, summary.json) will be appended below when they arrive.
+Full forensics from Saad's agent: [`docs/research/2026-10-17-saad-live-run-1.md`](../research/2026-10-17-saad-live-run-1.md)
+(per-joint table, all 48 plans in `.plans.jsonl`). The key facts:
+
+- **Result: failed.** For 32 s the arm opened the gripper, flexed the wrist hard (down to −123°), swung the base left and right
+  twice (−64…+53°), raised the shoulder at most 66° off rest, and never approached the cube (about 25 cm in front, right) or the tray.
+- **Execution was fine.** |last command − measured| was p50 0.7°, p95 3.8°. The failure is in the plans.
+- **The plans contradict each other.** One plan's end moved lift +61 and wrist_flex +64, a later one wrist_flex +112. Unstable,
+  inconsistent plans are the signature of inputs the model does not recognize, in the state, the scene, or both.
+- The scene camera is top-down over a white desk, with the arm at the far edge **facing the camera**. "box" named a round
+  white tray with a green rim.
+- The 15:21:41Z session (`pick up the cube and place it in the bowl`, lift reading +180) was claude-code's **fake-robot test of
+  the console** without a map, not a teammate.
 
 ## What we know (in the order it was found)
 
@@ -40,7 +51,8 @@ Forensics from Saad's agent (per-joint motion, map file, summary.json) will be a
    published. One wrong sign or a 20–30° offset on lift or elbow is enough to make reaches look "disoriented".
 2. **Stalls.** A 745 ms turnaround against a 533 ms stall-free budget meant brief holds plus chunks joined late. Since 15:30:53Z the
    server runs `--compile`: 351 ms p50, turnaround about 550–600 ms.
-3. **Task and scene distance.** BFL's SO-101 policy was fine-tuned on about 200 teleop episodes of a few pick-and-place tasks
+3. **Task and scene distance.** The scene camera faces the arm from the front; in the community data the scene camera was chosen
+   for top-down or high-angle views, viewpoint unknown relative to the arm. BFL's SO-101 policy was fine-tuned on about 200 teleop episodes of a few pick-and-place tasks
    ("place the box in the container"). Our wording, objects and camera placement differ. The base model saw about 1,000 community
    datasets, but only high-angle or top-down scene cameras (`community_corpus.json`).
 
