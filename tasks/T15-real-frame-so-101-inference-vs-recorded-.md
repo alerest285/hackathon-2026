@@ -1,8 +1,8 @@
 ---
 id: T15
 title: Real-frame SO-101 inference vs recorded actions
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - infra/gpu/real-so101.py
