@@ -1,8 +1,8 @@
 ---
 id: T08
 title: AWS agent toolkit rules in agent instructions
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - AGENTS.md
