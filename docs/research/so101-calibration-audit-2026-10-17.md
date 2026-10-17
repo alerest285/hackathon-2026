@@ -4,6 +4,10 @@
 no hardware, cameras, network inference, or motor calibration writes. Claude owns the
 console implementation. This note does not certify a numerical mapping for live use.
 
+**Follow-up:** the original history and write-failure findings below were fixed in
+`3fb5132`. See [the parallel review](#parallel-review-after-claudes-fixes) for verified
+fixes and remaining issues at `ca4ed38`, including console commit `8e303ef`.
+
 ## Finding
 
 There is evidence of a physical coordinate convention mismatch, not a degree/radian
@@ -127,3 +131,129 @@ Do not run the historical auto-calibration routine, which issues motor commands.
 
 Saad has offered read-only raw pose samples. Those and a confirmed training-frame
 reference remain necessary before calling any map a validated calibration fix.
+
+## Parallel review after Claude's fixes
+
+Reviewed on 2026-10-17 against `ca4ed38f9e99d584ac695721f9e8a404887079cc`, including
+controller fix `3fb5132`, console/storage fix `8e303ef`, and reference-check fix
+`ca4ed38`. This is an independent checker pass: no implementation edits, hardware
+connections, motor operations, or GPU calls. Findings were sent to the owning
+Claude agents through repository chat. Physical calibration remains experimental.
+
+### Verified fixes
+
+| Area | Evidence |
+| --- | --- |
+| Factual command history | 390 synthetic dry ticks retain the measured/held anchor at -101.8 degrees in both sync and prefetch modes; no motor writes. This supersedes the historical reproducer's dry-history finding. |
+| Failed motor writes | Exactly three consecutive failures latch an error and stop; command history retains the last successful command. `SafetyStop` stops immediately. |
+| Native motion guard | A 2-degree model step transformed into 20 native degrees is rejected before the fake bus writes. |
+| Console limits | Real `--live` without `--limits` exits with code 2. Native limits reach the guard with and without mapping; outer limits are transformed separately. A reversed-scale case maps native lift [-20, 30] to model [85, 110]. |
+| Disk usage default | Default console constructs no recorder. Recording requires `--record`. |
+| Native LeRobot recording | With installed LeRobot 0.6.1, a 12-frame episode produced two playable 12-frame MP4s and zero PNGs; resume saved a second episode. |
+| Reference checks | Zero pan movement and wrist residuals of 77.3 and 67.3 degrees now refuse to save, preserving both existing files. Valid normal/reversed wrist samples save appropriate check metadata. Explicit unchecked export retains its unchecked status. |
+| Mapping algebra | 10,000 random state round trips had maximum error 1.14e-5 degrees, including negative slopes. This checks algebra, not physical correspondence. |
+
+The controller review also ran 46 targeted robot tests successfully. The initial
+`so101_calibration_audit.py` is a historical bug reproducer, not a current acceptance
+test: its old bug assertions are expected to fail after the fix.
+
+### Remaining findings
+
+1. **Fitter output validation and identity.** `console/fit_reference.py` still marks a
+   NaN wrist reference as confirmed and writes it. Consistent but implausible captures
+   can produce reversed native wrist limits `[867.8, 175.0]`. The mapping is replaced
+   before calibration is read and limits computed, so a calibration-read failure
+   leaves a new map paired with old limits. `--from-saved` can relabel another robot's
+   captures without checking robot ID or a calibration fingerprint. Validate finite
+   six-channel captures and all generated intervals before replacing either output;
+   preserve both previous files on failure and bind saved captures to their source.
+
+2. **Console fault handling.** After a synthetic latched `SafetyStop`, `/status`
+   returns top-level `error: null` (the error remains buried in `stats`). `/task`
+   returns HTTP 200 and queues a task into the stopped loop because `started` remains
+   true. Surface the latched error, reject task/connect requests with a restart-required
+   response, and clear recording state. Do not automatically restart the motor loop.
+
+3. **Dry preview bypasses its own clamps.** In `robot/so101_client/loop.py`, rebasing
+   `_dry_cmd` onto an unbounded predicted action yields a 90-degree displayed jump to
+   100 despite native/model limits of +/-10 and a step maximum of 1 in an identity-map
+   test. This is a diagnostic defect: factual history stays correct and the live path
+   still clamps. Apply equivalent candidate checks after rebasing.
+
+4. **Streaming encoder backpressure is invisible to the recorder.** An isolated
+   fault-injection test deliberately slowed only the scene encoder. It saved 12
+   state/action rows, 6 scene video frames, and 12 wrist video frames, while both console
+   status and the episode sidecar reported zero dropped frames and no error. LeRobot
+   can drop frames inside its per-camera queue independently of the outer recorder
+   queue. Propagate encoder drop counts and reject incomplete episodes, or use recorder
+   thread backpressure that preserves frame alignment. This proves the failure path;
+   it does not establish that Saad's laptop currently experiences it. Sustained
+   two-camera throughput remains unmeasured on that laptop.
+
+5. **Recording shutdown and provenance.** A simulated disk-full exception during
+   `save_episode()` leaves the recorder thread alive and skips finalization. `close()`
+   eventually returns after its join timeout, while the app unconditionally prints
+   "dataset finalized". Propagate finalization failures. Explicit dry-run recording
+   also writes hypothetical actions to the same dataset format without a mode marker;
+   distinguish them from executed demonstrations. The recorder closes an episode on
+   every task-text change, conflicting with the UI's "Next instruction continues the
+   episode" description.
+
+6. **Legacy nonidentity gripper maps can falsify command history.** For gripper scale
+   0.5, model command 75 inverse-maps to native 150, which `MappedRobot.write()` clips
+   to 100. The loop records 75, whereas the sent value corresponds to model 50. T21's
+   identity gripper avoids this particular case; older sweep maps can still trigger it.
+
+The remaining physical questions are independent of software guards: whether the
+operator's rest matches the dataset's rest, lift/elbow/wrist-roll directions, gripper
+aperture endpoints, and a held-out validation pose. Rest mapping within a tolerance is
+not an independent check because the offset is fitted to make that equality hold.
+The dataset's observed bounds and encoder ranges are candidate operating restrictions,
+not proof of collision-free mechanical travel. Add gripper endpoints to the fitter's
+explicitly unverified assumptions.
+
+### Reproduction record
+
+Local scratch artifacts from this review (not required by the application):
+
+- `/private/tmp/so101_safety_fix_review.py`: factual history, write failures, native guard,
+  old console-limit defects, dry preview, and legacy gripper clipping. Its old
+  console-limit bug assertions are superseded by `8e303ef`.
+- `/private/tmp/so101_console_limits_review.py`: current limits propagation and the
+  remaining dry-preview/console-fault cases, without starting any component.
+- `/private/tmp/recording_checker_probe.py`: actual LeRobot create/resume, encoder
+  backpressure, and recorder shutdown faults. Temporary datasets are under
+  `/private/tmp/recording-checker-opn6218i`.
+- `/private/tmp/t21-ca4ed38-k4hx4lmj`: reference-check and invalid-output artifacts.
+
+The scripts used
+`/Users/ale/Developer/hackathon-2026-hanoi/robot/.venv/bin/python` and source from the
+read-only main checkout. Scratch paths are session-local; the numerical observations
+and fault setups above are the durable review record. No user recordings were deleted.
+Before deleting old PNG directories, verify their videos were finalized or that the
+recordings are explicitly disposable; unfinished episodes may contain their only
+camera data in those PNGs.
+
+### Subsequent changes reviewed at 15:25Z
+
+- `d375dbc` added unconditional recursive deletion of directories named `images`
+  under the data root. A read-only scratch selection test matched finished datasets,
+  unfinished datasets, and unrelated reference-photo directories alike. After the
+  checker escalated this, `60d4f16` removed automatic deletion; startup now reports
+  sizes only. No user files were deleted by this review.
+- The replacement `console/cleanup.sh` still overstates completion: one existing
+  MP4 and a `meta/episodes` directory cannot establish that all PNGs have encoded
+  equivalents. Saved episode 0 plus interrupted episode 1 is a counterexample.
+  This was sent to the owner; no cleanup was executed.
+- The new low-disk callback calls blocking `Recorder.save()` on the control thread.
+  With its queue full at 600 entries and free space mocked to 1 GB, `_on_tick(k=300)`
+  remained blocked for 255 ms and completed only after one queue slot was released.
+  A failed writer can block it indefinitely. Disk checks and save coordination must
+  not block the motor loop. Startup also checks `$HOME` rather than a custom
+  `--record-root` filesystem; the runtime free-space method does use the dataset root.
+  Reproducer: `/private/tmp/recording_lowdisk_probe.py`.
+- Saad's `1064c37` adds finite-input, generated-limit, saved-identity and calibration
+  fingerprint checks. Independent revalidation is in progress; the earlier fitter
+  findings above describe `ca4ed38`, not a claim that every finding survives this fix.
+- Claude acknowledged the remaining console fault and recording integrity cases
+  and is implementing fixes. Their verification is not implied by this report.
