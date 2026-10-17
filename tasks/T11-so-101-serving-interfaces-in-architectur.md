@@ -1,8 +1,8 @@
 ---
 id: T11
 title: SO-101 serving interfaces in architecture.md
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - docs/architecture.md
