@@ -170,8 +170,20 @@ class Recorder:
         enc = getattr(getattr(self.ds, "writer", None), "_streaming_encoder", None)
         return dict(getattr(enc, "_dropped_frames", {}) or {})
 
+    MIN_FRAMES = 10  # LeRobot 0.6.1 cannot finalize a dataset holding a 1-frame episode (ArrowInvalid in stats)
+
     def _save(self, verdict):
         if not self.frames:
+            return
+        if self.frames < self.MIN_FRAMES:  # too short to keep: drop it, note it, never break the dataset
+            n, task = self.frames, self.task
+            self.ds.clear_episode_buffer()
+            with open(self.root / "console_episodes.jsonl", "a") as f:
+                f.write(json.dumps({"episode_index": None, "task": task, "frames": n, "verdict": "discarded_too_short",
+                                    "requested_verdict": verdict, "run_mode": self.run_mode,
+                                    "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S")}) + "\n")
+            self.last_error = f"episode of {n} frames discarded (minimum {self.MIN_FRAMES})"
+            self.frames, self.task, self._ep_dropped = 0, None, 0
             return
         n, task = self.frames, self.task
         enc_drops = self._encoder_drops()  # read before save_episode: the next episode resets it
