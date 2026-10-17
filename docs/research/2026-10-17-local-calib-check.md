@@ -112,3 +112,31 @@ orientation. Saad's gripper rests about 170° rolled from kitchen's. The T21 map
 run 1 the model probably saw the gripper roll roughly upside down. New map: `~/hackathon-data/maps/so100_refpose_map.json` (phys map +
 wrist_roll offset 93.39; limits unchanged, `so100_phys_limits.json`). Under it, Saad's wrist_roll q01..q99 sits at
 old 17.8..134.1, mostly above kitchen's q99 (60.2): his gripper is physically rolled differently from the training data.
+
+## 6. Live run 2 (20:46:40–20:47:41Z, refpose map, `--step-max 3`, server sharing the GPU with the LoRA run)
+
+From the server log (`/workspace/so101-logs/so101-20261017T203747Z.jsonl` on wog1l8ijpl3jp5): 52 plans in 69 s, infer p50
+985 ms (shared GPU). Tracking was fine: |cmd − state| p95 ≤ 3.8° model. The dry run before it, at rest, gave 190 plans that
+agreed with each other (consecutive-plan direction cosine p50 0.98): pan −40 (robot's left), shoulder forward 15,
+elbow unfolding 37, wrist_roll −48 (into the trained range), gripper open to 35. Live:
+
+- 0–30 s: pan went left to its limit (native −83), the gripper opened (to 60–97) and wrist_roll rolled about 100° to its
+  limit (native 108). The shoulder came forward at most 59° from rest (native lift −102 → −43) and the elbow unfolded
+  to native 30.
+- 32–69 s: pan swung right to its other limit (native +62), wrist_flex reached its lower limit (native −2), and the
+  gripper stayed open. No grasp.
+- Live plans were much less consistent than the dry ones (cosine p50 0.57). The shoulder never went as far forward as
+  Saad's own demos do (native lift up to +80).
+
+Pan, wrist_flex and wrist_roll all ran into the limits file. The model keeps the upper arm behind vertical (model lift
+133–183, where kitchen's q01 is 85), so it never reaches the table.
+
+**Next candidate: the HF sim's normalization.** `multimodalart/flux-3-action-so101-sim@09edebb` dropped its sign/offset
+conversion. It feeds LeRobot degrees directly and swaps the policy's state/action q01/q99 for median new-calibration SO-101
+dataset stats, which is how the base was trained (per-part normalization). As a joint map:
+`~/hackathon-data/maps/so100_mediannew_map.json`, with no sign flips. Saad's rest normalizes to [0.22, −1.03, 1.02, 0.49,
+0.85, −0.89], all in range. The state normalization is exact. The action normalization is not: the server keeps the
+checkpoint's action stats, so native step sizes run ×[1.04, 1.44, 1.36, 1.72, 0.88, 1.0] vs the sim. Exact replication
+needs a server option that overrides `state_normalization`/`action_normalization`.
+
+Frame recorder for the next run: [`so100_watch.py`](so100_watch.py) (`record` beside the console, then `sheet`).
