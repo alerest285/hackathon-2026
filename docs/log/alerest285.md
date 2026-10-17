@@ -37,3 +37,4 @@ Append-only, newest at the bottom. One line per event.
 - 2026-10-17T14:14Z alerest285 [T19] (claude-code) follower-only flow: calibration card (file path, motors, MISSING state) + console/calibrate.sh; README step list for Saad's agent; fresh-clone start.sh test passed (page 12 s, 16 plans, 563 ms, recording)
 - 2026-10-17T14:14Z alerest285 [T19] (claude-code) release (done): pushed
 - 2026-10-17T14:41Z alerest285 [T20] (claude-code) calibration fix: per-joint linear map our q01..q99 (hand sweep, fit_mapping.py) -> checkpoint state_q01..q99 (hello), MappedRobot wraps the arm in the console (loop+server in model space, recordings in arm degrees, limits mapped), --flip for reversed joints. Basis: BFL base trained on ~1000 community SO-100/101 datasets with per-dataset normalization (community_corpus.json). Tested fake: roundtrip 4e-6, rest lift -100 -> 135, 16 plans from real server.
+- 2026-10-17T14:41Z alerest285 [T20] (claude-code) release (done): mapping shipped

@@ -1,7 +1,7 @@
 ---
 id: T20
 title: Calibration mapping: our arm range -> checkpoint range
-status: doing
+status: done
 owner: alerest285
 depends: 
 paths:
@@ -23,3 +23,4 @@ TODO: one or two sentences.
 
 ## Notes and handoffs (append, newest last)
 
+- 2026-10-17T14:41Z · alerest285 · done: mapping shipped
