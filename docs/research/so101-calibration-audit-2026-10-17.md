@@ -253,7 +253,23 @@ camera data in those PNGs.
   `--record-root` filesystem; the runtime free-space method does use the dataset root.
   Reproducer: `/private/tmp/recording_lowdisk_probe.py`.
 - Saad's `1064c37` adds finite-input, generated-limit, saved-identity and calibration
-  fingerprint checks. Independent revalidation is in progress; the earlier fitter
-  findings above describe `ca4ed38`, not a claim that every finding survives this fix.
+  fingerprint checks. Independent revalidation passed for valid normal/reversed
+  samples and all the earlier invalid-input, invalid-limit and calibration-read
+  failure cases. Wrong robot ID and mismatched existing hashes reject. Two cases
+  remain: a simulated disk-full failure writing limits leaves a new map alongside old
+  limits, and an old saved file without a calibration hash acquires today's hash
+  without proof that the captures used that calibration. Stage both outputs before
+  replacing either, restore the old pair on failure, and preserve unknown capture
+  provenance. Evidence: `/private/tmp/t21-1064c37-o7sbt3nu`.
 - Claude acknowledged the remaining console fault and recording integrity cases
   and is implementing fixes. Their verification is not implied by this report.
+
+`cbeb154` also wired the Hanoi evaluator through the mapping and native guard. Two
+targeted constructor/precondition tests passed without connections. Its recording
+integration has another queue-blocking path: `HanoiDataset.end()` holds a mutex while
+blocking in `Recorder.save()`, and the control observer needs that mutex to add its
+next frame. A full-queue fixture blocked that observer for 105 ms until the queue
+drained. The rig also accepts mapping metadata for a different robot ID, and legacy
+nonidentity gripper maps can make native-unit action logs report 150 although clipping
+sent 100. The T21 identity gripper avoids that conditional defect. These findings were
+sent to Hanoi's owner; evidence is in `/private/tmp/so101_eval_integration_review.py`.
