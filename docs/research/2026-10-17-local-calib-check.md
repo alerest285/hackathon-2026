@@ -74,3 +74,21 @@ but out of range. That needs the model (T24) or the LoRA result.
    `media/so100/follower_zero.webp` and `follower_rotated.webp` @ `6d723c45`. Read only, torque off. Two
    correspondences per joint give sign and offset directly.
 2. **qmap vs phys scale:** `calib_check.py` on this dataset, with both maps, on a free GPU.
+
+## 4. New physical map for the current calibration (~19:40Z)
+
+[`so100_phys_map_from_dataset.py`](so100_phys_map_from_dataset.py) uses T21's method (signs [+1, −1, +1, +1, −1],
+|k| = 4095/4096, gripper identity). The offsets match this dataset's median episode start to kitchen's, both teleop
+starts. It wrote `~/hackathon-data/maps/so100_phys_map.json` (my_follower_arm, calibration `d6d7cc…`) and
+`so100_phys_limits.json`: the range Saad's teleop reached ±5°, cut to the calibrated travel. Round trip max error 1.1e-5°.
+It does not touch `joint_mapping.json`.
+
+| | pan | lift | elbow | wrist_flex | wrist_roll |
+|---|---:|---:|---:|---:|---:|
+| offset b (old = s·k·ours + b) | −5.88 | 81.07 | 80.13 | 0.35 | −76.37 |
+| T21 offset shifted to the new calibration | −4.66 | 80.01 | 73.80 | 0.62 | −83.45 |
+| limits (ours) | −83.7..62.8 | −102.1..85.2 | −96.3..96.3 | −2.8..100.6 | −76.3..108.1 |
+
+The two maps agree within about 1° on pan, lift and wrist_flex. Elbow differs by 6.3°: T21 anchored a hand-folded rest
+at the mechanical stop, while the new map anchors teleop starts, which sit about 6° short of the stop, as kitchen's
+do. wrist_roll differs by 7.1°: Saad's start roll varies (IQR 10.9°).
