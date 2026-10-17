@@ -39,6 +39,9 @@ accum=$((effective / batch))
 export LEROBOT_DIR="${LEROBOT_DIR:-/workspace/lerobot-flux3}" HF_HOME="${HF_HOME:-/workspace/hf}"
 [ -f /workspace/train-env.sh ] || { echo "run train/setup.sh first" >&2; exit 1; }
 . /workspace/train-env.sh
+if [ -n "$policy_dir" ] && [ "$mode" = resume ]; then
+  echo "resume takes its base from the run (checkpoint + <run>.provenance/run.json); --policy is not accepted here" >&2; exit 2
+fi
 if [ -n "$policy_dir" ]; then
   [ -f "$policy_dir/config.json" ] || { echo "--policy $policy_dir: no config.json there" >&2; exit 2; }
   POLICY_DIR="$(cd "$policy_dir" && pwd)"; echo "base policy: $POLICY_DIR"
