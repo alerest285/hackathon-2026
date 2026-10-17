@@ -1,7 +1,7 @@
 ---
 id: T12
 title: Docs: on-demand H100 instead of spot
-status: doing
+status: done
 owner: alerest285
 depends: 
 paths:
@@ -23,3 +23,4 @@ TODO: one or two sentences.
 
 ## Notes and handoffs (append, newest last)
 
+- 2026-10-17T13:09Z · alerest285 · done: project.md says on-demand, decision 07
