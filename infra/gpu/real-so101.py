@@ -60,10 +60,13 @@ def frame_at(cam_key):
                 return f.to_ndarray(format="rgb24")
     raise RuntimeError("frame not found")
 
+from PIL import Image
 imgs = {k: frame_at(v) for k, v in CAMS.items()}
+print("raw camera shapes:", {k: v.shape for k, v in imgs.items()})
+# Both streams must share one shape (policy._cameras asserts it); the live rig should match too.
+imgs = {k: np.asarray(Image.fromarray(v).resize((640, 480), Image.BILINEAR)) for k, v in imgs.items()}
 np.savez(out / "observation.npz", **{"images.scene": imgs["scene"], "images.wrist": imgs["wrist"], "state": state})
 try:
-    from PIL import Image
     Image.fromarray(np.concatenate([imgs["scene"], imgs["wrist"]], 1)).save(out / "input_scene_left_wrist_right.png")
 except Exception as e:
     print("png skipped:", e)
