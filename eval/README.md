@@ -45,7 +45,8 @@ which follows them. `--limits limits.json` takes the joint limits in the arm's o
   `~/hackathon-data/joint_mapping.json`, written by `console/fit_reference.py`, T21) wraps the arm in
   `console/mapping.py`'s `MappedRobot`: the loop, the history and the server work in the checkpoint's
   convention. `--live` refuses to start without the file; a dry run warns and sends raw degrees.
-  `robot.mapping = ""` opts out explicitly.
+  `--mapping <file>` points at another map, such as a T24 candidate. `robot.mapping = ""` (or `--mapping ''`) opts
+  out explicitly.
 - **Limits.** `--live` refuses to start without them (`--limits` or `loop.joint_limits`, the arm's degrees).
   They feed the native guard as they are and the loop's clamp mapped into the checkpoint's convention.
 - **Native guard.** `SO101.write` stops the loop on a goal more than 25° from the measured joint, a jump of

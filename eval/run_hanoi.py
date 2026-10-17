@@ -63,6 +63,7 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--server", help="so101.v1 server URL (config: server.url)")
     p.add_argument("--port", help="SO-101 serial port (config: robot.port)")
     p.add_argument("--robot-id", help="LeRobot calibration id (config: robot.id)")
+    p.add_argument("--mapping", help="joint map JSON, e.g. a T24 candidate (config: robot.mapping; '' = raw LeRobot degrees)")
     p.add_argument("--scene", type=camera_source, help="scene camera index or path (config: cameras.scene)")
     p.add_argument("--wrist", type=camera_source, help="wrist camera index or path (config: cameras.wrist)")
     p.add_argument("--loop-mode", choices=["prefetch", "sync"], help="client loop mode (config: loop.mode)")
@@ -105,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
         "server.url": a.server,
         "robot.port": a.port,
         "robot.id": a.robot_id,
+        "robot.mapping": a.mapping,
         "cameras.scene": a.scene,
         "cameras.wrist": a.wrist,
         "loop.mode": a.loop_mode,
