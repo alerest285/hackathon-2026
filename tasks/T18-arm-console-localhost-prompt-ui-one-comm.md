@@ -1,7 +1,7 @@
 ---
 id: T18
 title: Arm console: localhost prompt UI + one-command start
-status: doing
+status: done
 owner: alerest285
 depends: 
 paths:
@@ -22,3 +22,4 @@ TODO: one or two sentences.
 
 ## Notes and handoffs (append, newest last)
 
+- 2026-10-17T14:11Z · alerest285 · done: console + start.sh + LeRobot recording + teleop.sh; needs robot/ (T06) on main
