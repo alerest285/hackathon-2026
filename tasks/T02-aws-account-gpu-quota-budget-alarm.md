@@ -1,8 +1,8 @@
 ---
 id: T02
 title: AWS account, GPU quota, budget alarm
-status: doing
-owner: alerest285
+status: blocked
+owner: 
 depends: 
 paths:
   - infra/aws/README.md
@@ -29,3 +29,11 @@ Human steps (sign-up, card, MFA) cannot be done by an agent. Log the quota reque
 
 ## Notes and handoffs (append, newest last)
 
+### Handoff 2026-10-17 14:30 (alerest285 / claude-code)
+
+- Done: project signed in (eu-north-1, profile `hackathon`); Agent Toolkit + aws-mcp on alerest285's Mac; budget `hackathon-gpu` $150 live with alerts.
+- **Waiting on AWS:** quota cases `All P Spot Instance Requests` → 16 and `Running On-Demand P instances` → 16, both CASE_OPENED 14:00.
+  Check: `infra/aws/quota.sh`. If refused: request `All G and VT Spot Instance Requests` (L-3819A6DF) for an L40S (decision 04).
+- **Waiting on alerest285:** upgrade to the paid plan (AWS Settings → Billing); the free plan denies all spot. Then set a $150 spend limit there.
+- Still open: teammates' GitHub logins in `members.txt` (ssh), and AWS team-member invites only for those who run AWS commands.
+- 2026-10-17T13:06Z · alerest285 · blocked: waiting on AWS quota review (2 cases open) + paid-plan upgrade by alerest285; budget done
