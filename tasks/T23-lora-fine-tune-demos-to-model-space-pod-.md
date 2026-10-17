@@ -1,8 +1,8 @@
 ---
 id: T23
 title: LoRA fine-tune: demos to model space, pod training, serve the adapter
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - train/**
