@@ -13,8 +13,10 @@ LeRobot 0.6.1 reads (raw - mid) * 360 / 4095 instead. Both are degrees, so per b
 - b: from the rest pose. Over 47 dataset episode starts it varies by under 2 deg (IQR) on every body joint.
 - gripper: both conventions run 0..100 from closed to fully open: identity.
 Output: ~/hackathon-data/joint_mapping.json in console/mapping.py's format (model range = the checkpoint's q01/q99), and
-~/hackathon-data/limits.json: the dataset's whole joint range in our degrees, +-10 deg, for console/start.sh --limits.
-Reads only. Torque goes off so the arm can be moved by hand, and stays off.
+~/hackathon-data/limits.json for console/start.sh --limits: the dataset's whole joint range in our degrees, +-10 deg,
+cut to our calibrated travel (1.5 deg inside each end; full-turn joints stay 5 deg away from the +-180 wrap).
+Reads only. Torque goes off so the arm can be moved by hand, and stays off. --from-saved refits from the readings
+stored in the existing mapping, without the arm.
 """
 from __future__ import annotations
 
@@ -37,6 +39,7 @@ DATASET_REST = np.array([0.8, 182.5, 171.8, 77.3, -87.8])
 DATASET_MIN = np.array([-111.1, 63.5, 32.6, -44.9, -155.2])
 DATASET_MAX = np.array([67.0, 186.4, 179.5, 101.9, 75.7])
 LIMIT_MARGIN = 10.0
+EDGE_MARGIN, WRAP_MARGIN = 1.5, 5.0  # deg inside our calibrated travel / away from the +-180 wrap of full-turn joints
 PHOTO = "https://raw.githubusercontent.com/huggingface/lerobot/6d723c45a993d1e030dfda20d48a893a74a4fe11/media/so100/follower_{}.webp"
 
 
@@ -66,14 +69,28 @@ def fit(rest, right=None, straight=None):
     return np.r_[sign * SCALE, 1.0], np.r_[b, 0.0], notes
 
 
-def write_outputs(A, B, meta, out: Path, limits_out: Path):
+def travel(calibration: Path):
+    """Our calibrated travel per body joint in LeRobot 0.6.1 degrees: (raw - mid) * 360 / 4095 at range_min/max."""
+    cal = json.loads(Path(calibration).read_text())
+    out = []
+    for j in JOINTS[:5]:
+        span = cal[j]["range_max"] - cal[j]["range_min"]
+        half = 180.0 - WRAP_MARGIN if span >= 4000 else span / 2 * 360 / 4095 - EDGE_MARGIN
+        out.append((-half, half))
+    return out
+
+
+def write_outputs(A, B, meta, out: Path, limits_out: Path, calibration: Path):
     q01, q99 = np.asarray(MODEL_Q01), np.asarray(MODEL_Q99)
     jm = JointMap((q01 - B) / A, (q99 - B) / A, q01, q99, meta=meta)  # two points on old = A * ours + B
     if out.exists():
         out.rename(out.with_name(f"{out.stem}.before-{time.strftime('%Y%m%dT%H%M%S')}.json"))
     jm.save(out)
     lo, hi = (DATASET_MIN - LIMIT_MARGIN - B[:5]) / A[:5], (DATASET_MAX + LIMIT_MARGIN - B[:5]) / A[:5]
-    limits = {j: sorted([round(float(a), 1), round(float(b), 1)]) for j, a, b in zip(JOINTS[:5], lo, hi)}
+    limits = {}
+    for j, a, b, (t_lo, t_hi) in zip(JOINTS[:5], lo, hi, travel(calibration)):
+        a, b = sorted([float(a), float(b)])
+        limits[j] = [round(max(a, t_lo), 1), round(min(b, t_hi), 1)]
     limits_out.write_text(json.dumps(limits, indent=1))
     return jm, limits
 
@@ -84,12 +101,17 @@ def main():
     p.add_argument("--robot-id", default="so101_hanoi")
     p.add_argument("--out", type=Path, default=DEFAULT_PATH)
     p.add_argument("--limits-out", type=Path, default=DEFAULT_PATH.with_name("limits.json"))
+    p.add_argument("--from-saved", action="store_true", help="refit from the readings stored in --out (no arm)")
     a = p.parse_args()
     from lerobot.robots.so_follower import SO101Follower, SO101FollowerConfig
 
     robot = SO101Follower(SO101FollowerConfig(port=a.port, id=a.robot_id, use_degrees=True))
     if not Path(robot.calibration_fpath).is_file():
         sys.exit(f"no calibration file {robot.calibration_fpath}: pass the --robot-id you calibrated with")
+    if a.from_saved:
+        saved = json.loads(a.out.read_text())["meta"]
+        rest, right, straight = (np.asarray(saved[k], float) for k in ("rest_ours", "right_ours", "straight_ours"))
+        return report(a, robot.calibration_fpath, rest, right, straight)
     bus = robot.bus
     bus.connect()
 
@@ -117,13 +139,16 @@ def main():
         straight = read()
     finally:
         bus.disconnect(disable_torque=False)
+    report(a, robot.calibration_fpath, rest, right, straight)
 
+
+def report(a, calibration, rest, right, straight):
     A, B, notes = fit(rest, right, straight)
     meta = {"method": "old LeRobot SO-100 convention, rest-anchored (console/fit_reference.py, T21)", "robot_id": a.robot_id,
             "sign": np.sign(A[:5]).tolist(), "offset_deg": np.round(B[:5], 2).tolist(), "rest_ours": np.round(rest, 2).tolist(),
             "right_ours": np.round(right, 2).tolist(), "straight_ours": np.round(straight, 2).tolist(), "notes": notes,
             "fitted_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
-    jm, limits = write_outputs(A, B, meta, a.out, a.limits_out)
+    jm, limits = write_outputs(A, B, meta, a.out, a.limits_out, calibration)
     print("\n" + "\n".join(notes))
     print(f"\n{'joint':14s} {'sign':>4s} {'offset':>7s}   {'ours rest':>9s} -> {'model':>6s} (dataset rest)   limits, our degrees")
     for i, j in enumerate(JOINTS):
