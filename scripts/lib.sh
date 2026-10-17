@@ -37,7 +37,7 @@ has_remote() { git remote get-url "$REMOTE" >/dev/null 2>&1; }
 fetch_throttled() {
   has_remote || return 0
   local every="${1:-0}" stamp="$ROOT/.git/FETCH_HEAD" age=999999
-  if [ -f "$stamp" ]; then age=$(( $(now_epoch) - $(stat -f %m "$stamp" 2>/dev/null || stat -c %Y "$stamp") )); fi
+  if [ -f "$stamp" ]; then age=$(( $(now_epoch) - $(stat -c %Y "$stamp" 2>/dev/null || stat -f %m "$stamp") )); fi
   [ "$age" -ge "$every" ] && git fetch -q "$REMOTE" "$BRANCH" 2>/dev/null || true
 }
 

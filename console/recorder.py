@@ -43,13 +43,17 @@ class Recorder:
 
         self.root = Path(root).expanduser()
         if (self.root / "meta" / "info.json").exists():
-            self.ds = LeRobotDataset.resume(repo_id, root=self.root) if hasattr(LeRobotDataset, "resume") else None
+            self.ds = LeRobotDataset.resume(repo_id, root=self.root, streaming_encoding=True, encoder_threads=2) \
+                if hasattr(LeRobotDataset, "resume") else None
             if self.ds is None:
                 raise RuntimeError(f"{self.root} exists and this LeRobot cannot resume; pick another --record-root")
         else:
             self.root.parent.mkdir(parents=True, exist_ok=True)
+            # streaming_encoding: frames go straight into the video encoder. Without it LeRobot writes every frame of
+            # both cameras as a PNG first (~30 MB/s), which filled Saad's disk.
             self.ds = LeRobotDataset.create(repo_id, fps=fps, features=features(), root=self.root,
-                                            robot_type=robot_type, use_videos=True, image_writer_threads=4)
+                                            robot_type=robot_type, use_videos=True, image_writer_threads=0,
+                                            streaming_encoding=True, encoder_threads=2)
         self.repo_id, self.fps = repo_id, fps
         self.q: queue.Queue = queue.Queue(maxsize=600)
         self.frames = 0  # frames in the open episode

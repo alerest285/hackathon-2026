@@ -58,12 +58,16 @@ def parse_args(argv=None):
     p.add_argument("--mapping", type=Path, default=None,
                    help="joint mapping from fit_mapping.py (default ~/hackathon-data/joint_mapping.json, used if present)")
     p.add_argument("--no-mapping", action="store_true", help="send our raw joint values to the model (not recommended)")
-    p.add_argument("--no-record", action="store_true", help="do not record runs as a LeRobot dataset")
+    p.add_argument("--record", action="store_true",
+                   help="record runs as a LeRobot dataset (off by default; streams straight to video, no image files)")
+    p.add_argument("--no-record", action="store_true", help=argparse.SUPPRESS)  # old flag; recording is off by default now
     p.add_argument("--record-repo", default="alerest285/so100_hanoi_flux_zeroshot",
                    help="LeRobot repo_id of the recording (stays local until you push it)")
     p.add_argument("--record-root", type=Path, default=None,
                    help="default: ~/hackathon-data/<repo name> (zero-shot runs; teleop demos go to a separate dataset)")
     a = p.parse_args(argv)
+    if a.live and not a.fake_robot and a.limits is None:
+        p.error("--live needs --limits (native joint limits, e.g. ~/hackathon-data/limits.json from fit_reference.py)")
     if not a.fake_robot and not a.port:
         p.error("--port is required unless --fake-robot (find it with: uv run --python 3.13 lerobot-find-port)")
     return a
@@ -76,7 +80,8 @@ class Console:
         ns = argparse.Namespace(
             fake_robot=a.fake_robot, fake_cameras=a.fake_cameras, fake_net=a.fake_net, port=a.port,
             robot_id=a.robot_id, scene=a.scene, wrist=a.wrist, server=a.server, image_size=256,
-            image_format="jpeg", jpeg_quality=95, latency_ms=400.0, jitter_ms=50.0)
+            image_format="jpeg", jpeg_quality=95, latency_ms=400.0, jitter_ms=50.0,
+            limits=a.limits)  # robot/run.py builds the native-unit NativeGuard from these (safety.py)
         robot, cameras, net = robot_run.build(ns)
         limits = robot_run.load_limits(a.limits)
         from mapping import DEFAULT_PATH, JointMap, MappedRobot
@@ -105,7 +110,7 @@ class Console:
         self.full: dict = {}  # newest full-resolution BGR frame per camera, for recording
         self.recording = False  # True between Run/Next and Pause/Save/Discard
         self.recorder = None
-        if not a.no_record:
+        if a.record and not a.no_record:
             from recorder import Recorder
 
             root = a.record_root or Path("~/hackathon-data").expanduser() / a.record_repo.split("/")[-1]
