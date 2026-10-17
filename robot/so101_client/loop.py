@@ -476,10 +476,22 @@ class ControlLoop:
                 self._first_chunk = True
                 if self.cfg.dry_run:  # the hypothetical chain restarts on this chunk, planned from the held pose
                     acts = np.asarray(reply.actions, dtype=np.float32)
-                    self._dry_cmd = (acts[start - 1] if start > 0 else req["anchor"]).astype(np.float32).copy()
+                    self._dry_cmd = self._inside_limits(acts[start - 1] if start > 0 else req["anchor"])
         return {"id": reply.id, "tick": req["tick"], "d": d, "accepted": start is not None, "start": start,
                 "reason": reason, "turnaround_ms": turnaround_ms, "server_ms": server_ms, "rtt_ms": rtt_ms,
                 "actions": reply.actions}
+
+    def _inside_limits(self, cmd) -> np.ndarray:
+        """A dry run's restart point, held to what a live command could reach: the joint limits (a joint the held
+        pose has outside them may stay there, as in clamp()) and the gripper range. Not step-limited: the preview
+        jumps back to each new plan."""
+        out = np.array(cmd, dtype=np.float64).reshape(6)
+        if self.cfg.joint_limits is not None:
+            lim = np.asarray(self.cfg.joint_limits, dtype=np.float64)
+            held = np.asarray(self._last_cmd, dtype=np.float64)[:5]
+            out[:5] = np.clip(out[:5], np.minimum(lim[:, 0], held), np.maximum(lim[:, 1], held))
+        out[5] = min(100.0, max(0.0, out[5]))
+        return out.astype(np.float32)
 
     def _expire_requests(self, k: int, t: float) -> None:
         rid = self._planner.scheduler.inflight

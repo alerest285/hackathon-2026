@@ -303,3 +303,24 @@ def test_dry_run_history_holds_and_the_candidate_cannot_drift():
     lift = np.array([i.cmd[1] for i in ticks]) - held_pose[1]
     assert lift.max() <= 2.0 * 42 + 1e-3  # within one chunk; the old chain passed this after 42 ticks
     assert len(ticks) > 60 and not any(i.written for i in ticks)
+
+
+def test_dry_run_preview_stays_inside_the_joint_limits():
+    """Codex check on 3fb5132: the restart point of a dry run's preview ignored the limits (90 -> 100 with +-10)."""
+    robot = FakeRobot(noise=0.0)
+    pose = robot._x
+    limits = tuple((float(v) - 10.0, float(v) + 10.0) for v in pose[:5])
+    net = RampNet(latency_ms=100.0, jitter_ms=0.0)
+    loop = ControlLoop(robot, FakeCameras(width=160, height=120), net,
+                       LoopConfig(dry_run=True, caffeinate=False, joint_limits=limits))
+    rec = Recorder()
+    loop.add_observer(rec)
+    loop.start()
+    try:
+        loop.set_task(TASK_A, reset_history=True)
+        assert wait_for(lambda: len(accepted(rec.snapshot())) >= 4, 6.0)
+    finally:
+        loop.stop()
+    assert loop.error is None
+    lift = np.array([i.cmd[1] for i in rec.snapshot() if i.task == TASK_A])
+    assert lift.max() <= limits[1][1] + 1e-4 and lift.max() > limits[1][1] - 1.0  # reaches the limit, never past it

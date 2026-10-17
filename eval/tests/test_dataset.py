@@ -99,3 +99,34 @@ def test_mapped_fake_run_logs_native_units_and_records_one_lerobot_episode_per_a
     assert sum(s["frames"] for s in side) == ds.meta.total_frames
     states = np.stack([np.asarray(row) for row in ds.hf_dataset["observation.state"]])
     assert abs(np.median(states[:, 1]) - REST_POSE[1]) < 30  # the dataset holds the arm's own degrees
+
+
+def test_a_full_writer_queue_never_blocks_the_control_thread():
+    """end() may wait for a slot in the writer's queue; add() on the control thread must not wait with it."""
+    import threading
+    import time
+
+    from hanoi_eval.dataset import HanoiDataset
+
+    class Writer:  # the Recorder's interface: add() never blocks, save() blocks while the queue is full
+        def __init__(self):
+            self.frames, self.release = 0, threading.Event()
+
+        def add(self, *args):
+            self.frames += 1
+
+        def save(self, verdict):
+            self.release.wait(5.0)
+
+    ds = HanoiDataset.__new__(HanoiDataset)
+    ds.writer, ds._task, ds._lock, ds.frames_added = Writer(), None, threading.Lock(), 0
+    ds.begin("task a")
+    ender = threading.Thread(target=ds.end, args=("success", {}))
+    ender.start()
+    time.sleep(0.05)  # end() is now stuck in save()
+    t0 = time.perf_counter()
+    ds.add(np.zeros(6), np.zeros(6), np.zeros((4, 4, 3)), np.zeros((4, 4, 3)), "task a")
+    assert time.perf_counter() - t0 < 0.02 and ds.frames_added == 0  # returned at once; the attempt was closed
+    ds.writer.release.set()
+    ender.join(1.0)
+    assert not ender.is_alive()
