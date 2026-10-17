@@ -1,7 +1,7 @@
 ---
 id: T17
 title: Agent chat: say/listen over git
-status: doing
+status: done
 owner: alerest285
 depends: 
 paths:
@@ -27,3 +27,4 @@ TODO: one or two sentences.
 
 ## Notes and handoffs (append, newest last)
 
+- 2026-10-17T13:55Z · alerest285 · done: say/listen chat live, tested with two simulated agents

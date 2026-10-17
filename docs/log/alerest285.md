@@ -30,3 +30,4 @@ Append-only, newest at the bottom. One line per event.
 - 2026-10-17T13:50Z alerest285 [T15] (claude-code) release (done): real-frame inference works; f150 tracks the teleop reach, f300 diverges; outputs /workspace/outputs/real-so101*
 - 2026-10-17T13:52Z alerest285 [T16] (claude-code) README: team table (GitHub/SSH/Runpod per member), zero-shot runbook for the pod, GPU sharing rules, parallel-agent rules; ErfanRzt invited (write), no GitHub SSH keys yet
 - 2026-10-17T13:52Z alerest285 [T16] (claude-code) release (done): README runbook + agent rules
+- 2026-10-17T13:55Z alerest285 [T17] (claude-code) release (done): say/listen chat live, tested with two simulated agents
