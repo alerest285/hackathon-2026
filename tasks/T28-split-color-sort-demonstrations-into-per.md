@@ -1,8 +1,8 @@
 ---
 id: T28
 title: Split color-sort demonstrations into per-color episodes
-status: todo
-owner: 
+status: doing
+owner: joelleayoub
 depends: 
 paths:
   - scripts/split_color_sort_dataset.py
