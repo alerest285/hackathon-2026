@@ -1,11 +1,16 @@
 """HanoiRunner: one instruction per move through the robot ControlLoop (decisions 05 and 06).
 
 Each step: set_task(prompt, reset_history) -> run until the operator's key, the automatic end or the
-timeout -> loop.pause() -> verdict. History is reset at an episode start and after a restore; between
-steps the queued actions are dropped and the history kept (`between_steps`). In eval mode the operator's
-key is the ground truth; in demo mode an automatic end counts as success. The strict protocol stops an
-episode at its first failed step; recover lets the operator restore the state and retry up to max_retries.
-Sanity runs are one-step episodes, one per legal single move, each repeated.
+timeout -> loop.pause() -> verdict. History is reset at an episode start and after an intervention (a
+restore, or resuming from a pause); between steps the queued actions are dropped and the history kept
+(`between_steps`). In eval mode the operator's key is the ground truth; in demo mode an automatic end counts
+as success. The strict protocol stops an episode at its first failed step; recover lets the operator restore
+the state and retry up to max_retries. Sanity runs are one-step episodes, one per legal single move, each
+repeated.
+
+A control loop that stopped, or a server connection lost for NET_LOSS_S, is not a policy failure: the
+attempt ends with end_reason "error", the episode ends as "error" and stays out of the totals, and the run
+stops with the reason.
 """
 
 from __future__ import annotations
@@ -26,10 +31,16 @@ from .video import VideoTaps
 logger = logging.getLogger(__name__)
 
 STEP_EVENTS = frozenset({"success", "fail", "retry", "pause", "quit"})
+NET_LOSS_S = 5.0  # no server connection for this long during a step: an infrastructure error
+REPLY_WAIT_S = 3.0  # at most this long after a step for the reply to its last request
 
 
 class QuitRun(Exception):
     """The operator pressed q (or Ctrl-C): finish the current files and stop."""
+
+
+class InfraError(RuntimeError):
+    """The control loop stopped or the server went away: the episode ends as an error, not a failed step."""
 
 
 @dataclass
@@ -116,6 +127,25 @@ class HanoiRunner:
         if error is not None:
             logger.error("operator keys lost (%r): ending the step and the run", error)
         return error is not None
+
+    def _loop_problem(self) -> str | None:
+        """Why the control loop cannot run a step, or None."""
+        error = getattr(self.loop, "error", None)
+        if error:
+            return f"control loop stopped: {error}"
+        if not getattr(self.loop, "running", True):
+            return "control loop stopped"
+        return None
+
+    def _net_connected(self) -> bool:
+        return bool(getattr(getattr(self.loop, "net", None), "connected", True))
+
+    def _await_replies(self) -> None:
+        """Wait, at most REPLY_WAIT_S, until the loop has no request in flight, so the reply to the step's
+        last request lands in this episode's files. The next step could not request before it anyway."""
+        deadline = time.perf_counter() + REPLY_WAIT_S
+        while getattr(self.loop, "pending", 0) and self._loop_problem() is None and time.perf_counter() < deadline:
+            time.sleep(self.poll_s)
 
     # runs -------------------------------------------------------------------------------------------------
 
@@ -242,6 +272,8 @@ class HanoiRunner:
                     self.attempts.append(a)
                     interventions += a["interventions"]
                     reset_next = cfg.between_steps == "reset_history"
+                    if a["end_reason"] == "error":
+                        raise InfraError(a["error"])
                     if a["quit"]:
                         raise QuitRun
                     if a["success"]:
@@ -298,7 +330,7 @@ class HanoiRunner:
             "end": end,
             "failed_step": failed_step,
             "failed_reason": failed_reason,
-            "error": repr(error) if error else None,
+            "error": (str(error) if isinstance(error, InfraError) else repr(error)) if error else None,
             "utc_start": utc_start,
             "utc_end": utc_now(),
             "t0_perf": t0,
@@ -353,37 +385,54 @@ class HanoiRunner:
         info = {"episode": plan.index, "step": step, "try": tries}
         detector = AutoEndDetector(cfg.auto_end) if cfg.auto_end.enabled else None
         n = len(plan.moves)
+        # Strict mode has no retry, so r is no key during a step there: it would end the episode as a fail.
+        step_events = STEP_EVENTS if protocol == "recover" else STEP_EVENTS - {"retry"}
+        end_keys = "/".join(k for k, e in (("s", "success"), ("f", "fail"), ("r", "retry"), ("q", "quit"))
+                            if e in step_events)
         self._auto.clear()
         recorder.attempt = index
         self._attach(detector)
-        self.keys.expect("step", STEP_EVENTS, info)
+        self.keys.expect("step", step_events, info)
         self.log(
             f"  step {step}/{n}{f' retry {tries}' if tries else ''}: {text}  "
             f"[history {'reset' if reset_history else 'kept'}]"
         )
         utc_start, t_start = utc_now(), self.clock()
-        end_reason, key_verdict = None, None
+        end_reason, key_verdict, problem = None, None, None
         retry_requested = interrupted = False
-        pauses, paused_s, pause_t = 0, 0.0, None
+        pauses, paused_s, pause_t, net_lost_t = 0, 0.0, None, None
         try:
-            self.loop.set_task(text, reset_history=reset_history)
-            while True:
+            problem = self._loop_problem()
+            if problem is None:
+                self.loop.set_task(text, reset_history=reset_history)
+            while problem is None:
                 event = self.keys.poll()
                 now = self.clock()
+                problem = self._loop_problem()
+                if problem is None and pause_t is None:  # a pause may be spent fixing the tunnel
+                    if self._net_connected():
+                        net_lost_t = None
+                    elif net_lost_t is None:
+                        net_lost_t = now
+                    elif now - net_lost_t >= NET_LOSS_S:
+                        problem = f"no connection to the server for {NET_LOSS_S:g} s"
+                if problem is not None:
+                    break
                 if event == "pause":
                     if pause_t is None:
                         self._attach(None)
                         self.loop.pause()
                         pause_t, pauses = now, pauses + 1
-                        self.log("    paused: space resumes, s/f/r/q end the step")
+                        self.log(f"    paused: space resumes, {end_keys} end the step")
                     else:
                         paused_s += now - pause_t
-                        pause_t = None
+                        pause_t, net_lost_t = None, None
                         if detector is not None:
                             detector.interrupt()
                         self._attach(detector)
-                        self.loop.set_task(text, reset_history=False)
-                        self.log("    resumed")
+                        # A pause is an intervention: the full reset (docs/architecture.md, decision 06).
+                        self.loop.set_task(text, reset_history=True)
+                        self.log("    resumed, history reset")
                 elif event in ("success", "fail", "retry"):
                     end_reason, key_verdict, retry_requested = "key", event == "success", event == "retry"
                     break
@@ -398,6 +447,8 @@ class HanoiRunner:
                         end_reason = "timeout"
                         break
                 time.sleep(self.poll_s)
+            if problem is not None:
+                end_reason = "error"
         except KeyboardInterrupt:
             end_reason, interrupted = "quit", True
         finally:
@@ -412,8 +463,10 @@ class HanoiRunner:
         quit_now = end_reason == "quit"
         verdict_by = "operator"
         success: bool | None
-        if quit_now:
+        if quit_now or end_reason == "error":
             success, verdict_by = None, None
+            if problem is not None:
+                self.log(f"    -> infrastructure error, not a failed step: {problem}")
         elif end_reason == "key":
             success = key_verdict
         elif cfg.mode == "demo" and end_reason == "auto":
@@ -430,6 +483,11 @@ class HanoiRunner:
         if success is not None:
             who = "operator" if verdict_by == "operator" else "demo: an auto end counts as success"
             self.log(f"    -> {'success' if success else 'fail'} ({who})")
+        if end_reason != "error" and not quit_now:
+            try:
+                self._await_replies()  # usually done during the verdict prompt; counted in "chunks" below
+            except KeyboardInterrupt:
+                quit_now = interrupted = True
         restored = tries > 0
         return {
             "episode": plan.index,
@@ -454,6 +512,7 @@ class HanoiRunner:
             "active_s": round(t_end - t_start - paused_s, 3),
             "paused_s": round(paused_s, 3),
             "end_reason": end_reason,
+            "error": problem,
             "success": success,
             "verdict_by": verdict_by,
             "retry_requested": retry_requested,
@@ -474,4 +533,6 @@ def end_word(ep: dict) -> str:
         return "all steps done with interventions"
     if ep["end"] == "failed":
         return f"failed at step {ep['failed_step']} ({ep['failed_reason']})"
+    if ep["end"] == "error":
+        return f"infrastructure error, not counted: {ep['error']}"
     return ep["end"]

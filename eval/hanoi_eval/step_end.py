@@ -4,19 +4,24 @@ from __future__ import annotations
 
 import numpy as np
 
-PHASES = ("unarmed", "idle", "closing", "grasped", "released", "fired")
+PHASES = ("unarmed", "idle", "closing", "missed", "grasped", "released", "fired")
 
 
 class AutoEndDetector:
     """Feed it every tick of one step; update() returns "auto" exactly once, after grasp, release and rest.
 
-    - grasp: the gripper crosses the closed threshold and does not reopen past the open threshold for min_hold_s
+    - grasp: the gripper crosses the closed threshold and, for min_hold_s, neither reopens past the open
+      threshold nor closes past empty_threshold. Closing that far means it closed on nothing: a miss.
     - release: it then crosses the open threshold
-    - rest: every joint 0-4 then moves slower than rest_speed_deg_s, measured between consecutive states, for rest_s
+    - rest: every joint 0-4 then moves slower than rest_speed_deg_s, measured between consecutive samples, for rest_s
 
-    A gripper that starts the step closed has to open once before a grasp can count. Closing again after the
-    release goes back to the grasp phase. `closed_is` says which end of the 0..100 range is closed. The detector
-    is pure: the caller passes the tick time, so it has no clock and no thread.
+    A miss, or a grasp that later closes past empty_threshold (the piece slipped out), counts for nothing: once
+    the gripper leaves the closed band the detector is back where it was before that close (idle, or released
+    after an earlier release). A gripper that starts the step closed has to leave the closed band once before
+    a grasp can count. `closed_is` says which end of the 0..100 range is closed. With signal = "cmd" the
+    gripper and the joints are the commanded ones, and there is no miss check (a commanded gripper closes as
+    far on air as on a piece). The detector is pure: the caller passes the tick time, so it has no clock and
+    no thread.
     """
 
     def __init__(self, cfg):
@@ -41,6 +46,14 @@ class AutoEndDetector:
         c = self.cfg
         return g >= c.open_threshold if c.closed_is == "low" else g <= c.open_threshold
 
+    def empty(self, g: float) -> bool:
+        """Closed past empty_threshold: nothing between the fingers. Off with signal = "cmd" or no threshold."""
+        c = self.cfg
+        e = getattr(c, "empty_threshold", None)
+        if e is None or c.signal == "cmd":
+            return False
+        return g <= e if c.closed_is == "low" else g >= e
+
     @property
     def fired(self) -> bool:
         return self.phase == "fired"
@@ -57,13 +70,13 @@ class AutoEndDetector:
     def update(self, t: float, state, cmd=None) -> str | None:
         if self.phase == "fired":
             return None
-        state = np.asarray(state, dtype=np.float64)
-        source = state if (self.cfg.signal == "state" or cmd is None) else np.asarray(cmd, dtype=np.float64)
+        use_cmd = self.cfg.signal == "cmd" and cmd is not None
+        source = np.asarray(cmd if use_cmd else state, dtype=np.float64)
         g = float(source[5])
         if g == g:
             self.gripper_min = min(self.gripper_min, g)
             self.gripper_max = max(self.gripper_max, g)
-        joints = state[:5]
+        joints = source[:5]
         speed = None
         if self._prev is not None:
             dt = t - self._prev[0]
@@ -73,7 +86,7 @@ class AutoEndDetector:
 
         phase = self.phase
         if phase == "unarmed":
-            if self.is_open(g):
+            if not self.closed(g):
                 self._to("idle", t)
         elif phase in ("idle", "released"):
             if self.closed(g):
@@ -93,12 +106,19 @@ class AutoEndDetector:
         elif phase == "closing":
             if self.is_open(g):
                 self._to(self._close_from, t)
+            elif self.empty(g):
+                self._to("missed", t)
             elif t - self._t_close >= self.cfg.min_hold_s:
                 self._to("grasped", t)
+        elif phase == "missed":
+            if not self.closed(g):
+                self._to(self._close_from, t)
         elif phase == "grasped":
             if self.is_open(g):
                 self._t_rest = None
                 self._to("released", t)
+            elif self.empty(g):
+                self._to("missed", t)
         return None
 
     def _to(self, phase: str, t: float) -> None:

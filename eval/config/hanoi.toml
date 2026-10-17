@@ -27,6 +27,7 @@ signal = "state"               # state: measured gripper | cmd: commanded grippe
 closed_is = "low"              # which end of the gripper's 0..100 range is closed; depends on the calibration
 closed_threshold = 15.0        # at or past this the gripper counts as closed (set it above the value while holding a disk)
 open_threshold = 25.0          # at or past this it counts as open again
+empty_threshold = 3.0          # at or past this it closed on nothing, a miss (between fully closed on air and the thinnest piece; delete to turn off)
 min_hold_s = 0.5               # the grasp must not reopen for this long
 rest_s = 1.0                   # then the arm must rest this long
 rest_speed_deg_s = 10.0        # rest: every joint slower than this; one encoder step per tick is about 2.6 deg/s

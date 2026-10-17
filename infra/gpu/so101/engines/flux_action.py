@@ -7,8 +7,12 @@ The path verified in flux-action 830f1ce: ``flux_action.inference.so101.load_pol
 commands: joint deltas integrated from ``command_history[:, -1]``, gripper absolute.
 
 The shared encoders come from the checkpoint config (``video_vae_id``, ``text_encoder_id``, Hub specs
-``repo_id[:file][@revision]``, resolved by models/runtime.py and models/text_encoder.py); they are pinned
-to ``base_revision`` here.
+``repo_id[:file][@revision]``, resolved by models/runtime.py and models/text_encoder.py). The config's own
+pin wins; ``base_revision`` pins a spec that has none, and a different pin is an error unless forced.
+
+``compile`` is experimental: flux-action compiles only the released DROID geometry (prepare_inference), so
+this wraps the SO-101 DiT forward in ``torch.compile`` the way LeRobot's compile_model does. If the first
+warmup fails compiled, the engine goes back to eager and says so in the log and in hello.
 """
 
 import json
@@ -18,7 +22,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .base import Engine, pin_revision, window_order
+from .base import Engine, override_sampling, pin_revision, window_order
 
 
 def _git_commit(path: Path) -> str | None:
@@ -46,6 +50,9 @@ class FluxActionEngine(Engine):
         device: str = "cuda",
         compile: bool = False,
         offload_text_encoder: bool = True,
+        force_base_revision: bool = False,
+        guidance: tuple[float, float] | None = None,
+        steps: int | None = None,
     ):
         super().__init__()
         import flux_action
@@ -62,9 +69,13 @@ class FluxActionEngine(Engine):
         started = time.perf_counter()
         bundle = resolve_policy_directory(checkpoint, revision=revision)
         raw = json.loads((bundle / "config.json").read_text())
-        vae_id, vae_note = pin_revision(raw.get("video_vae_id"), base_revision)
-        te_id, te_note = pin_revision(raw.get("text_encoder_id"), base_revision)
         print(f"flux-action: policy package {bundle}", flush=True)
+        print(
+            f"flux-action: checkpoint config encoders {raw.get('video_vae_id')} and {raw.get('text_encoder_id')}",
+            flush=True,
+        )
+        vae_id, vae_note = pin_revision(raw.get("video_vae_id"), base_revision, force_base_revision)
+        te_id, te_note = pin_revision(raw.get("text_encoder_id"), base_revision, force_base_revision)
         for note in (vae_note, te_note):
             if note:
                 print(f"flux-action: {note}", flush=True)
@@ -72,12 +83,16 @@ class FluxActionEngine(Engine):
         if offload_text_encoder:
             policy.set_text_encoder_offload(True)
         policy.to(self.device)
-        if compile:
-            # flux-action compiles only the released DROID geometry (prepare_inference); this wraps the
-            # SO-101 DiT forward the way LeRobot's compile_model does (modeling_flux3.py _inference_dit).
-            policy.dit.forward = torch.compile(policy.dit.forward)
         self.policy = policy
         cfg = policy.config
+        for note in override_sampling(cfg, guidance, steps):
+            print(f"flux-action: {note}", flush=True)
+        cfg.validate_inference()
+        self.compiled = bool(compile)
+        if compile:
+            # Experimental (module docstring): an instance attribute, so nn.Module.__call__ uses it and
+            # `del policy.dit.forward` restores the eager forward.
+            policy.dit.forward = torch.compile(policy.dit.forward)
         self.snapshots = snapshot_indices(cfg)
         self.camera_keys = list(cfg.camera_keys)
         self.cameras = [key.removeprefix("images.") for key in self.camera_keys]
@@ -114,7 +129,9 @@ class FluxActionEngine(Engine):
             "dtype": cfg.torch_dtype,
             "video_vae_id": vae_id,
             "text_encoder_id": te_id,
-            "compile": "dit" if compile else False,
+            "config_video_vae_id": raw.get("video_vae_id"),
+            "config_text_encoder_id": raw.get("text_encoder_id"),
+            "compile": "dit (experimental)" if compile else False,
             "offload_text_encoder": bool(offload_text_encoder),
             "device": str(self.device),
             "gpu": gpu,
@@ -134,9 +151,27 @@ class FluxActionEngine(Engine):
         print(
             f"flux-action: sampling {cfg.sampler}, {cfg.num_inference_steps} steps, guidance "
             f"{cfg.guidance_scale}/{guidance_action}, shift {cfg.sampler_shift}, seed {cfg.inference_seed}, "
-            f"{cfg.torch_dtype}, {'compiled DiT (the first plan compiles it)' if compile else 'eager'}",
+            f"{cfg.torch_dtype}, {'compiled DiT, experimental (the first plan compiles it)' if compile else 'eager'}",
             flush=True,
         )
+
+    def warmup(self, task: str) -> None:
+        """Engine.warmup; a compiled DiT that fails it is replaced by the eager forward and warmed again."""
+        try:
+            super().warmup(task)
+        except Exception as e:
+            if not self.compiled:
+                raise
+            error = f"{type(e).__name__}: {e}"[:500]
+            print(f"flux-action: WARNING: the compiled DiT failed in warmup ({error}); falling back to eager", flush=True)
+            del self.policy.dit.forward
+            self.compiled = False
+            self.first_plan_ms = None
+            self.meta["compile"] = False
+            self.meta["compile_failed"] = error
+            if self.device.type == "cuda":
+                self.torch.cuda.empty_cache()
+            super().warmup(task)
 
     @staticmethod
     def _load(so101, bundle: Path, raw: dict, vae_id, te_id):

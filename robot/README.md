@@ -36,26 +36,27 @@ Decision 06 sets this order. Each step must pass before the next:
 | # | Command | Passes when |
 |---|---|---|
 | 1 | `uv run --python 3.13 python camera_check.py` then `... camera_check.py --scene 0 --wrist 1` | both cameras run at about 30 fps, and in `runs/camera-check-<stamp>/composed.png` the left half is the fixed scene camera and the right half is the wrist camera. A swapped pair cannot be fixed by renaming: swap the indices. |
-| 2 | `infra/aws/ssh.sh -N &` then `uv run --python 3.13 python ping.py --n 20 --infer 20` | `PASS`, with the round trip split into server and network time |
+| 2 | `../infra/aws/ssh.sh -N &` then `uv run --python 3.13 python ping.py --n 20 --infer 20` | `PASS`, with the round trip split into server and network time |
 | 3 | `uv run --python 3.13 python run.py --task "..." --fake-robot --scene 0 --wrist 1` | `PASS` against the live server, with real frames and a fake arm |
 | 4 | `uv run --python 3.13 python run.py --task "..." --port /dev/tty.usbmodemXXXX --robot-id so101_hanoi` | `PASS` in a dry run on the arm: the state is read, the commands are only logged |
 | 5 | the same with `--live` | one supervised episode, with someone at the arm |
 
 `readout.py` helps before step 5. It prints the six joint values at 10 Hz. With `--torque-off` the arm can be
 moved by hand, and `--save-limits limits.json --margin 3` writes joint limits for `run.py --limits`. The
-gripper column gives the open and closed values for eval's step-end thresholds; which end is closed depends
-on the calibration.
+gripper column gives the open and closed values for eval's step-end thresholds (also the fully closed value
+on air, eval's `empty_threshold`); which end is closed depends on the calibration.
 
 Fakes stand in for any part: `--fake-robot`, `--fake-cameras`, `--fake-net [hold|sine|pickplace]`
-(with `--latency-ms`, `--jitter-ms`). `run.py --fake-robot --fake-cameras --fake-net` runs with no hardware
-and no server. With `--fake-robot` the commands go to the fake arm, which follows them.
+(with `--latency-ms`, `--jitter-ms`). `uv run --python 3.13 python run.py --task "pick up the small disk and
+place it on the right peg" --fake-robot --fake-cameras --fake-net` runs with no hardware and no server. With
+`--fake-robot` the commands go to the fake arm, which follows them.
 
 ## PASS criteria (run.py)
 
 | Check | Limit | Why |
 |---|---|---|
 | tick lateness p99 | ≤ 2 ms | the 30 Hz deadlines hold |
-| holds after the first chunk | 0 (prefetch) | the arm never waits for the network; sync mode holds by design and is reported as n/a |
+| holds after the first chunk | 0 (prefetch) | the arm never waits for the network; sync mode holds by design and is reported as n/a. Holds after failed state reads are counted apart, as `bus_holds` |
 | turnaround p95 | ≤ 533 ms | 16 ticks keeps every executed action inside the 32 the checkpoint was meant to execute (decision 06) |
 | chunks accepted | ≥ 1 | the pipe works |
 
@@ -75,9 +76,14 @@ Each run writes `runs/<stamp>/` (gitignored):
   torque on. LeRobot 0.6.1 would turn torque off on disconnect (`disable_torque_on_disconnect=True`) and drop
   the arm; this client switches that off.
 - Connecting runs LeRobot's `configure()`, which turns torque off for a moment while it writes the motor
-  settings. Start with the arm resting.
-- Every executed command is clamped: joint limits first (`--limits`), then at most `--step-max` (6°) per
-  tick per joint, and the gripper to 0..100. Holds resend the last command unchanged.
+  settings. Start with the arm resting. The goal register is pinned to the present position before and after,
+  so turning torque back on moves nothing, even after `readout.py --torque-off` left an old pose there.
+- Every executed command is clamped: joint limits first (`--limits`, lo < hi), then at most `--step-max` (6°)
+  per tick per joint, and the gripper to 0..100. A joint that starts outside its limits is never pulled in
+  faster than the plan nor moved further out (the log says which joints). Holds resend the last command
+  unchanged.
+- A failed state read does not stop the chunk: the command does not need a fresh state. Three failures in a
+  row hold the arm (`bus_holds`), and 30 stop the loop.
 - For `--live`, someone stands at the arm with a hand on the power switch.
 - `readout.py --torque-off` releases the motors, and the arm falls unless someone holds it. Torque stays
   off when it exits.
@@ -97,7 +103,7 @@ Each run writes `runs/<stamp>/` (gitignored):
 |---|---|
 | `so101_client/protocol.py` | `so101.v1` msgpack frames; arrays as `{"__nd__": true, "dtype", "shape", "data"}`; every message carries `type` |
 | `so101_client/history.py` | `Ring(8)`: entry j pairs the state and frames of tick t−7+j with the command sent the tick before; `window()` keeps the frames at indices 0 and 7 |
-| `so101_client/chunks.py` | pure: `to_deltas`, `integrate`, `clamp`, `Stitcher` (join at d, 6-tick crossfade, drop if d > 35), `Scheduler` (prefetch P = 16 or remaining ≤ d_max + 8; sync 32-then-replan), `Planner` (the two together, per tick) |
+| `so101_client/chunks.py` | pure: `to_deltas`, `integrate`, `clamp`, `Stitcher` (join at d, 6-tick crossfade, drop if the start index > 35), `Scheduler` (prefetch P = 16 or remaining ≤ d_max + 8; sync 32-then-replan), `Planner` (the two together, per tick, and the tick the current hold began) |
 | `so101_client/net.py` | `NetClient`: websockets on its own thread and event loop, TCP_NODELAY, reconnect with backoff; requests in flight fail with an error on disconnect |
 | `so101_client/cameras.py` | `Cameras`: one thread per camera (AVFoundation on macOS), 640×480 kept for taps, 256×256 JPEG q95 / PNG / raw encoded on the camera thread |
 | `so101_client/robot_io.py` | `SO101` over LeRobot 0.6.1 `so101_follower`: `sync_read` Present_Position, `sync_write` Goal_Position |
@@ -105,16 +111,21 @@ Each run writes `runs/<stamp>/` (gitignored):
 | `so101_client/loop.py` | `ControlLoop`, `LoopConfig`, `TickInfo`: the 30 Hz loop from docs/architecture.md "Client loop" |
 
 A chunk's joints are turned back into per-tick deltas (D0 = a0 − cmd_hist[−1], Di = ai − ai−1). The client
-joins the chunk at index d = k − r, or at index 0 after any hold. It adds each delta to the command it last
-sent, which is what BFL's `select_action` does tick by tick. A position jump at a seam is therefore
-impossible, and the crossfade smooths the change in velocity. With one request in flight, prefetch stays
-stall-free while the turnaround is at most 21 ticks, since a chunk joined at d leaves 42 − d actions.
+joins the chunk at index d = k − r while a chunk runs. After a hold that began at tick h it starts at index
+max(0, h − r), which is 0 when the request went out during the hold (start, task change, sync mode); after a
+starvation hold it skips the actions for ticks the arm already moved through on the previous chunk, which
+would otherwise be replayed as overshoot. It adds each delta to the command it last sent, which is what BFL's
+`select_action` does tick by tick. A position jump at a seam is therefore impossible, and the crossfade
+smooths the change in velocity. With one request in flight, prefetch stays stall-free while the turnaround is
+at most 21 ticks, since a chunk joined at d leaves 42 − d actions. d_max leaves out stale replies and the first
+reply of each task (it can include encoding a new caption), which stands in only until another reply arrives.
 
 `LoopConfig` adds four optional fields to the shared signature. `request_timeout_s` (10 s) is generous
 because the first request for a new instruction includes encoding the caption on the server.
 `max_frame_age_ms` (1000) blocks new requests while a camera's newest frame is older than that.
 `error_backoff_ticks` is 15 and `caffeinate` is True. `ControlLoop.start()` connects whatever robot, cameras and net are not up yet. `stop()` releases only
-those, so a caller that connected them keeps ownership.
+those, so a caller that connected them keeps ownership. Besides the shared API, eval reads `running`, `error`,
+`pending` (requests not yet answered) and `stats()`.
 
 ## Tests
 
@@ -123,9 +134,10 @@ cd robot && uv run --python 3.13 pytest -q
 ```
 
 No hardware or GPU is needed. The tests cover the chunk arithmetic (re-integration, seams, crossfade, drop
-rule, gripper, clamp), the window alignment, the prefetch and sync cadences, and the loop with all three
-fakes (holds only before the first chunk, `set_task` drops the chunk and ignores the stale reply, pause holds,
-sync executes 32 then replans). They also run `NetClient` against a small `so101.v1` peer on 127.0.0.1,
-`Cameras` on generated video files, and `SO101` against the installed LeRobot 0.6.1 (the config it builds and
-the calibration check). `eval/tests/test_e2e_socket.py` runs this client against the real T10 server
+rule, gripper, clamp), the window alignment, the prefetch and sync cadences (no overshoot after a starvation
+hold, one slow first reply does not set the cadence), and the loop with all three fakes (holds only before the
+first chunk, `set_task` drops the chunk and ignores the stale reply, pause holds, sync executes 32 then
+replans, a failed state read is not starvation). They also run `NetClient` against a small `so101.v1` peer on
+127.0.0.1, `Cameras` on generated video files, and `SO101` against the installed LeRobot 0.6.1 (the config it
+builds, the calibration check, and the goal pinned before and after `configure()`). `eval/tests/test_e2e_socket.py` runs this client against the real T10 server
 (`infra/gpu/so101/server.py --engine fake`) over a localhost socket.

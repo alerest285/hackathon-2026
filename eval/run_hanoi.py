@@ -3,6 +3,7 @@
     uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --fake --episodes 1
     uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --sanity 2 --port /dev/tty.usbmodem...
     uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --live --port /dev/tty.usbmodem...
+    uv run --project eval python eval/run_hanoi.py --print-warmup     # the GPU server command that warms every prompt
 
 Without --live nothing is written to the motors (dry run); --fake swaps in FakeRobot, FakeCameras and
 FakeNet(pickplace); --fake-hardware swaps in FakeRobot and FakeCameras and keeps the real server (--server).
@@ -15,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import shlex
 import signal
 import sys
 from pathlib import Path
@@ -22,6 +24,7 @@ from pathlib import Path
 from so101_client import STATE_NAMES
 
 from hanoi_eval.config import ConfigError, load_config
+from hanoi_eval.hanoi import all_prompts
 from hanoi_eval.keys import unattended_keys
 from hanoi_eval.session import EVAL_DIR, SessionOptions, run_session
 
@@ -34,6 +37,13 @@ def read_limits(path: Path) -> list[list[float]]:
     """{joint: [lo, hi]} for the five joints, as robot/readout.py --save-limits writes it."""
     data = json.loads(path.read_text())
     return [[float(data[name][0]), float(data[name][1])] for name in STATE_NAMES[:5]]
+
+
+def warmup_command(prompts: list[str]) -> str:
+    """The serve command for the GPU host with one --warmup-task per prompt."""
+    lines = ["bash infra/gpu/so101/serve.sh --log-dir ~/so101-logs"]
+    lines += [f"  --warmup-task {shlex.quote(text)}" for text in prompts]
+    return " \\\n".join(lines)
 
 
 def parse(argv: list[str] | None) -> argparse.Namespace:
@@ -62,6 +72,8 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--unattended", "--auto-confirm", dest="unattended", action="store_true",
                    help="test-only, with --fake or --fake-hardware: enter at every prompt, verdict success after an "
                         "auto end and fail after a timeout (runs without a terminal)")
+    p.add_argument("--print-warmup", action="store_true",
+                   help="print the GPU server command that warms up every prompt this config can produce, then exit")
     p.add_argument("-v", "--verbose", action="store_true")
     return p.parse_args(argv)
 
@@ -100,6 +112,11 @@ def main(argv: list[str] | None = None) -> int:
     except (ConfigError, OSError, KeyError, ValueError) as e:
         print(f"{a.config}: {e}", file=sys.stderr)
         return 2
+    if a.print_warmup:
+        prompts = all_prompts(cfg)
+        print(f"# {len(prompts)} prompts from {a.config}; run on the GPU host from the repo root:")
+        print(warmup_command(prompts))
+        return 0
     if cfg.loop.joint_limits:
         print(f"joint limits (deg): {cfg.loop.joint_limits}{f' from {a.limits}' if a.limits else ''}")
     print(f"config {a.config}: {cfg.n} pieces {cfg.pieces}, {cfg.places[cfg.start]} -> {cfg.places[cfg.goal]}, "

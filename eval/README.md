@@ -7,8 +7,13 @@ streams, and writes a results table. FLUX makes every motion; the runner only ch
 
 ## Run it
 
+From the repo root:
+
 ```sh
-cd eval && uv sync --python 3.13                       # once; pulls ../robot (so101-client) editable
+uv sync --project eval --python 3.13                   # once; pulls ../robot (so101-client) editable
+
+# the GPU server command that warms up every prompt of the config (run it on the box)
+uv run --project eval python eval/run_hanoi.py --print-warmup
 
 # no hardware: FakeRobot + FakeCameras + FakeNet(pickplace)
 uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --fake --episodes 1
@@ -25,7 +30,10 @@ uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml -
 uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --live --protocol recover --port ... --robot-id ...
 ```
 
-The server is reached through `ssh -L 8000` (`infra/aws/ssh.sh`); `--server` overrides `server.url`.
+The server is reached through `ssh -L 8000` (`infra/aws/ssh.sh`); `--server` overrides `server.url`. On connect
+the runner compares the server's warmed captions (hello `warm_tasks`) with the config's prompts and prints a
+WARNING naming the ones the first plan would have to encode; `--print-warmup` gives the server command that
+warms them all (9 with the default config).
 Without `--live` nothing reaches the motors. With `--fake` or `--fake-hardware` the commands go to the fake arm,
 which follows them. `--limits limits.json` takes the joint limits written by `robot/readout.py --save-limits`.
 `--unattended` (alias `--auto-confirm`) is test-only and needs `--fake` or `--fake-hardware`: it presses enter at
@@ -44,8 +52,9 @@ terminal. Fake runs keep the configured label unless `--label` is given, so name
    and the step is retried, at most `max_retries` times. These runs get their own directory (`...-recover`)
    and their own summary; they never enter the strict numbers.
 
-History: `set_task(prompt, reset_history=True)` at an episode start and after a restore; between steps
-`reset_history=False` (queued actions dropped, history kept). `between_steps = "reset_history"` exists for an A/B.
+History: `set_task(prompt, reset_history=True)` at an episode start and after an intervention (a restore, or
+resuming from a pause); between steps `reset_history=False` (queued actions dropped, history kept).
+`between_steps = "reset_history"` exists for an A/B.
 
 ## Keys
 
@@ -53,8 +62,8 @@ History: `set_task(prompt, reset_history=True)` at an episode start and after a 
 |---|---|---|
 | `s` | end the step: success | verdict: success |
 | `f` | end the step: fail | verdict: fail; at a restore prompt, end the episode |
-| `r` | end the step: fail, ask for a retry | verdict: fail and retry (recover); at a restore prompt, retry |
-| space | pause (hold position, the timer stops); again to resume | - |
+| `r` | recover only: end the step, fail, ask for a retry (strict has no retries, so `r` does nothing there) | verdict: fail and retry (recover); at a restore prompt, retry |
+| space | pause (hold position, the timer stops); again to resume, with the history reset (a pause is an intervention) | - |
 | `q` | stop: the attempt is logged as aborted, files are finished, the run ends | quit |
 | enter | - | start the episode; at a restore prompt, retry |
 
@@ -66,21 +75,29 @@ Ctrl-C works like `q`. The terminal is restored on exit.
 Whichever comes first, then `loop.pause()`:
 
 - **key:** the operator's `s`/`f`/`r` is the verdict.
-- **auto:** the gripper closes past `closed_threshold` and does not reopen past `open_threshold` for
-  `min_hold_s`, then reopens past `open_threshold`, then every joint moves slower than `rest_speed_deg_s`
-  (measured between consecutive states) for `rest_s`. A gripper that starts a step closed has to open
-  once first. Closing again after the release goes back to the grasp phase.
+- **auto:** the gripper closes past `closed_threshold` and, for `min_hold_s`, neither reopens past
+  `open_threshold` nor closes past `empty_threshold` (closing that far means it closed on nothing: a miss),
+  then reopens past `open_threshold`, then every joint moves slower than `rest_speed_deg_s` (measured between
+  consecutive samples) for `rest_s`. A miss, or a piece that slips out, counts for nothing. A gripper that
+  starts a step closed has to leave the closed band once first. Closing again after the release goes back to
+  the grasp phase.
 - **timeout:** `step_timeout_s` of robot time (pauses do not count).
+- **error:** the control loop stopped (`loop.error`, e.g. 30 failed state reads after a USB drop) or the server
+  connection was gone for 5 s outside a pause. That is not the policy's failure: the attempt gets
+  `end_reason = "error"` and no verdict, the episode ends as `error` and stays out of the totals, and the run
+  stops with the reason.
 
 **eval mode:** after an auto end or a timeout the runner asks `s`/`f`; the operator is the ground truth.
 **demo mode:** an auto end counts as success and the next step starts without a prompt; a timeout pauses
 and asks. After a solved demo episode the next one carries the tower back, so the demo runs unattended.
 
 **Tuning the auto end.** `closed_is` depends on the calibration (which end of the gripper's 0..100 range
-is closed). Set `closed_threshold` above the gripper value while it holds a disk, and `open_threshold`
-below the value when it lets go: every attempt in `attempts.jsonl` records `auto_end.gripper_min` /
-`gripper_max`, and `ticks.jsonl` has the trace. In a dry run the measured arm does not move, so use
-`signal = "cmd"` there.
+is closed). Set `closed_threshold` above the gripper value while it holds a disk, `open_threshold`
+below the value when it lets go, and `empty_threshold` between the fully closed value on air and the value
+while it holds the thinnest piece (`robot/readout.py` shows both): every attempt in `attempts.jsonl` records
+`auto_end.gripper_min` / `gripper_max`, and `ticks.jsonl` has the trace. In a dry run the measured arm does
+not move, so use `signal = "cmd"` there: the gripper and the rest speed then come from the commands, and
+there is no miss check (the model commands the same close for a piece as for air).
 
 ## Config (`config/hanoi.toml`)
 
@@ -95,7 +112,7 @@ below the value when it lets go: every attempt in `attempts.jsonl` records `auto
 | `protocol`, `max_retries` | `strict` or `recover`, retries per step |
 | `episodes`, `label` | episodes per run; the run directory suffix |
 | `between_steps` | `keep_history` (decision 06) or `reset_history` |
-| `[auto_end]` | `enabled`, `signal` (`state`/`cmd`), `closed_is` (`low`/`high`), `closed_threshold`, `open_threshold`, `min_hold_s`, `rest_s`, `rest_speed_deg_s` |
+| `[auto_end]` | `enabled`, `signal` (`state`/`cmd`), `closed_is` (`low`/`high`), `closed_threshold`, `open_threshold`, `empty_threshold` (optional; absent = no miss check), `min_hold_s`, `rest_s`, `rest_speed_deg_s` |
 | `[loop]` | `LoopConfig`: `mode` (`prefetch`/`sync`), `fps`, `period`, `crossfade`, `exec_horizon`, `chunk`, `step_max_deg`, `spin_margin_ms`, `joint_limits` |
 | `[robot]`, `[cameras]`, `[server]` | port and calibration id; camera sources, sizes, image format; server URL |
 | `[video]` | `enabled`, `codec` (`mp4v`), `fps` |
@@ -113,18 +130,20 @@ eval/runs/<UTC stamp>-<label>[-sanity|-recover][-demo]/     (gitignored)
     episode.json    steps completed in a row, steps attempted, attempts, success, interventions, end,
                     UTC and perf_counter times, robot time, tick/chunk/video stats, loop stats
     attempts.jsonl  one line per step attempt: step, try, move, prompt, reset_history, times,
-                    end_reason key|auto|timeout|quit, success, verdict_by, pauses, interventions,
+                    end_reason key|auto|timeout|quit|error, error, success, verdict_by, pauses, interventions,
                     auto-end phases and gripper range, chunk and tick counts, tower state before/after
     ticks.jsonl     every control tick: k, t, attempt, state, cmd, held, lateness, frame ages, remaining,
                     task, and the chunk handled on that tick (id, tick, d, accepted, reason, timings)
     chunks.npz      every chunk received: id, tick, d, k, accepted, start, reason, turnaround_ms,
-                    server_ms, rtt_ms, attempt, actions (N, 42, 6) absolute
+                    server_ms, rtt_ms, attempt (the one running at the request tick), actions (N, 42, 6)
+                    absolute. A step waits up to 3 s for the reply to its last request, so none is lost.
     scene.mp4, wrist.mp4             full resolution, mp4v, nominal 30 fps
     scene.times.csv, wrist.times.csv frame index -> perf_counter capture time (aligns with ticks.jsonl t)
 ```
 
-Interventions are pauses plus restores before a retry. Aborted episodes (`q`) stay in the table, marked,
-and are left out of the totals.
+Interventions are pauses plus restores before a retry. Aborted episodes (`q`) and episodes ended by an
+infrastructure error stay in the table, marked, and are left out of the totals; `summary.md` prints the
+control loop's error.
 
 ## Into docs/status
 
@@ -148,8 +167,11 @@ cd eval && uv run --python 3.13 pytest -q
 ```
 
 Unit tests cover the solver, the state tracker, prompts, the config checks and the step-end detector on
-synthetic traces. `test_runner_fake.py` runs full episodes through the real `ControlLoop` with `FakeRobot`,
-`FakeCameras` and `FakeNet(pickplace)` and scripted keys (strict success, a failed step, recover, quit, sanity).
+synthetic traces (including a miss on air, a slipped piece, a start between the thresholds and the commanded
+signal). `test_runner_fake.py` runs full episodes through the real `ControlLoop` with `FakeRobot`,
+`FakeCameras` and `FakeNet(pickplace)` and scripted keys (strict success, a failed step, recover, quit, sanity,
+a dead control loop as an error episode, the history reset on resume, `r` ignored in strict mode, every chunk
+logged with the attempt that requested it, `--print-warmup`).
 `test_e2e_socket.py` starts `infra/gpu/so101/server.py --engine fake` (3 s pickplace cycle, 300 ms latency) as a
 subprocess and runs one strict episode with fake hardware and the real `NetClient` over the socket, with the
 unattended operator. It checks the output layout, zero holds after each step's first chunk, and that every recorded

@@ -6,6 +6,9 @@ Modes (all integrate joint motion from cmd_hist[-1], like the model; the gripper
 - pickplace: a 9 s cycle that restarts whenever the task string changes: reach (gripper open), close,
   transport (closed), open, return, then 2.5 s of rest. A step-end detector (grasp, release, 1 s rest)
   fires about 7.5 s after a task starts. period_s scales every phase in proportion (tests use 2-3 s).
+
+guidance and steps, when given, are only reported in hello (the fake does not sample), so the server's
+--guidance and --steps can be checked without a GPU.
 """
 
 import math
@@ -61,6 +64,8 @@ class FakeEngine(Engine):
         fps: float = 30.0,
         chunk: int = 42,
         period_s: float = PERIOD_S,
+        guidance: tuple[float, float] | None = None,
+        steps: int | None = None,
     ):
         super().__init__()
         if mode not in MODES:
@@ -87,6 +92,10 @@ class FakeEngine(Engine):
                 "period_s": self.period_s,
             },
         }
+        if guidance is not None:
+            self.meta["guidance"] = [float(g) for g in guidance]
+        if steps is not None:
+            self.meta["steps"] = int(steps)
         print(
             f"fake: mode {mode}, latency {self.latency_ms:.0f} ms, jitter {self.jitter_ms:.0f} ms, "
             f"pickplace period {self.period_s:g} s",

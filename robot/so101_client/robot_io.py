@@ -3,13 +3,17 @@
 Joints 0-4 are degrees, the gripper is RANGE_0_100 (which end is closed depends on the calibration).
 Differences from LeRobot's own connect(): no interactive calibration (a missing calibration file or a
 mismatch with the motors is an error that names the fix), and the goal is pinned to the present position
-right after configuring. LeRobot 0.6.1 disables torque on disconnect by default
-(SOFollowerConfig.disable_torque_on_disconnect, motors_bus.disconnect): this client turns that off, so
-the arm keeps holding its last goal unless disconnect(torque_off=True) is asked for.
+before and after configuring. configure() turns torque off and back on motor by motor, and each servo then
+drives to whatever its Goal_Position register holds; readout.py --torque-off leaves the pose of its own
+connect there. The register is writable with torque off, and configure() leaves it alone. LeRobot 0.6.1
+disables torque on disconnect by default (SOFollowerConfig.disable_torque_on_disconnect,
+motors_bus.disconnect): this client turns that off, so the arm keeps holding its last goal unless
+disconnect(torque_off=True) is asked for.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from pathlib import Path
 
@@ -74,13 +78,21 @@ class SO101:
                     f"the motors' calibration differs from {path}. Run {self.calibrate_command()} and press ENTER "
                     "to write that file to the motors, or type c to calibrate again."
                 )
+            self._pin_goal()  # before configure() turns torque back on (module docstring)
             robot.configure()  # LeRobot's own: position mode, PID gains, gripper current limits
-            present = bus.sync_read("Present_Position", num_retry=self.num_read_retries)
-            bus.sync_write("Goal_Position", present)
+            self._pin_goal()
         except Exception:
+            with contextlib.suppress(Exception):
+                self._pin_goal()  # never leave torque on with a stale goal
             bus.disconnect(disable_torque=False)
             raise
         log.info("SO-101 %s connected on %s", self.robot_id, self.port)
+
+    def _pin_goal(self) -> None:
+        """Goal_Position := Present_Position on every motor, so torque on moves nothing."""
+        bus = self._robot.bus
+        present = bus.sync_read("Present_Position", num_retry=self.num_read_retries)
+        bus.sync_write("Goal_Position", present)
 
     def read_state(self) -> np.ndarray:
         """(6,) float32: degrees x5 + gripper %, in state_names order."""
@@ -98,8 +110,7 @@ class SO101:
         goal to the present position, so the arm stays where it is."""
         bus = self._robot.bus
         if enabled:
-            present = bus.sync_read("Present_Position", num_retry=self.num_read_retries)
-            bus.sync_write("Goal_Position", present)
+            self._pin_goal()
             bus.enable_torque()
         else:
             bus.disable_torque()

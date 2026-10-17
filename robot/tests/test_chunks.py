@@ -143,12 +143,39 @@ def test_clamp():
     assert clamp([0, 0, 0, 0, 0, -5], np.array([0, 0, 0, 0, 0, 100.0]), step_max=6.0)[5] == 0.0  # gripper not rate-limited
     limits = [(-5, 5)] * 5
     np.testing.assert_allclose(clamp([20, -20, 1, 0, 0, 50], last, limits, 6.0)[:5], [5, -5, 1, 0, 0])
-    # limits first, then the step: inside the limits it stays inside; outside it moves back at most step_max
+    # inside the limits a joint stays inside
     inside = clamp([20, 0, 0, 0, 0, 50], np.array([4.9, 0, 0, 0, 0, 50]), limits, 6.0)
     assert inside[0] == 5.0
-    outside = clamp([20, 0, 0, 0, 0, 50], np.array([20.0, 0, 0, 0, 0, 50]), limits, 6.0)
-    assert outside[0] == 14.0
+    # outside them (the arm started there) it is never pulled in faster than planned, nor moved further out
+    start = np.array([20.0, 0, 0, 0, 0, 50])
+    assert clamp([20, 0, 0, 0, 0, 50], start, limits, 6.0)[0] == 20.0  # a zero-delta plan: it stays
+    assert clamp([18, 0, 0, 0, 0, 50], start, limits, 6.0)[0] == 18.0  # inward at the planned pace
+    assert clamp([23, 0, 0, 0, 0, 50], start, limits, 6.0)[0] == 20.0  # not further out
+    assert clamp([-30, 0, 0, 0, 0, 50], start, limits, 6.0)[0] == 14.0  # step_max still applies
     np.testing.assert_allclose(clamp([1, 2, 3, 4, 5, 6], last, None, None), [1, 2, 3, 4, 5, 6])
+
+
+def test_after_a_starvation_hold_a_reply_skips_the_ticks_already_moved():
+    anchor = np.zeros(6, np.float32)
+    planner = Planner("prefetch")
+    planner.reset(0)  # set_task at tick 0
+    assert planner.offer(ramp(anchor, 0.5), anchor, d=0, k=0) == 0  # requested during the hold: index 0
+    last = anchor.astype(np.float64)
+    for k in range(42):
+        last = planner.step(last, k)
+    assert planner.step(last, 42) is None and planner.hold_start == 42  # ran out: the hold begins at 42
+    # requested at tick 30 while the chunk ran, arrived at 50: actions 0..11 are for ticks 30..41, already moved
+    assert planner.offer(ramp(anchor, 0.5), anchor, d=20, k=50) == 12
+    for k in range(51, 81):
+        last = planner.step(last, k)
+    assert planner.step(last, 81) is None and planner.hold_start == 81
+    assert planner.offer(ramp(anchor, 0.5), anchor, d=4, k=85) == 0  # requested at 81, during the hold
+    for k in range(86, 128):
+        last = planner.step(last, k)
+    assert planner.step(last, 128) is None
+    # requested at 88: 40 ticks would be skipped, more than 42 - 1 - K: dropped, and the planner holds on
+    assert planner.offer(ramp(anchor, 0.5), anchor, d=42, k=130) is None
+    assert planner.holding and planner.step(last, 131) is None
 
 
 def test_to_deltas_rejects_bad_shapes():

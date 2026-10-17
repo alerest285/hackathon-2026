@@ -5,9 +5,10 @@ import threading
 import time
 
 import numpy as np
+import pytest
 
 from so101_client.fakes import FakeCameras, FakeNet, FakeRobot
-from so101_client.loop import ControlLoop, LoopConfig
+from so101_client.loop import BUS_HOLD_AFTER, ControlLoop, LoopConfig
 
 TASK_A = "pick up the small red disk and place it on the right peg"
 TASK_B = "pick up the medium blue disk and place it on the middle peg"
@@ -158,3 +159,47 @@ def test_dry_run_writes_nothing():
     assert robot.writes == 0
     moved = [i for i in rec.snapshot() if not i.held]
     assert moved and np.abs(moved[-1].cmd[:5] - moved[0].cmd[:5]).max() > 0.1  # commands were still computed
+
+
+class GlitchyRobot(FakeRobot):
+    """FakeRobot whose next `fail` state reads raise, like Feetech status packets that come back corrupted."""
+
+    fail = 0
+
+    def read_state(self):
+        if self.fail > 0:
+            self.fail -= 1
+            raise OSError("corrupted status packet")
+        return super().read_state()
+
+
+def test_a_failed_state_read_keeps_the_chunk_going_and_is_not_starvation():
+    robot = GlitchyRobot()
+    loop = ControlLoop(robot, FakeCameras(width=160, height=120), FakeNet("sine", latency_ms=100.0, jitter_ms=0.0),
+                       LoopConfig(dry_run=False, caffeinate=False))
+    rec = Recorder()
+    loop.add_observer(rec)
+    loop.start()
+    try:
+        loop.set_task(TASK_A, reset_history=True)
+        assert wait_for(lambda: len(accepted(rec.snapshot())) >= 2, 4.0)
+        robot.fail = 1  # one glitch: the chunk goes on
+        assert wait_for(lambda: loop.stats()["bus_errors"] == 1, 1.0)
+        time.sleep(0.3)
+        robot.fail = BUS_HOLD_AFTER  # that many in a row: the last one holds
+        assert wait_for(lambda: loop.stats()["bus_errors"] == 1 + BUS_HOLD_AFTER, 1.0)
+        time.sleep(0.3)
+        assert loop.pending in (0, 1)
+    finally:
+        loop.stop()
+    assert loop.error is None
+    s = loop.stats()
+    assert s["starved"] == 0 and s["bus_holds"] == 1
+    ticks = rec.snapshot()
+    first = next(j for j, i in enumerate(ticks) if i.chunk and i.chunk["accepted"])
+    assert sum(i.held for i in ticks[first:]) == 1
+
+
+def test_joint_limits_need_lo_below_hi():
+    with pytest.raises(ValueError, match="lo < hi"):
+        ControlLoop(FakeRobot(), FakeCameras(), FakeNet(), LoopConfig(joint_limits=((10.0, -10.0),) * 5))

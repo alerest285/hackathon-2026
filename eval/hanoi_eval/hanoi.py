@@ -182,6 +182,15 @@ def prompt(move: Move, cfg) -> str:
     )
 
 
+def all_prompts(cfg) -> list[str]:
+    """Every distinct instruction the config can produce, solution order first: every piece onto every place
+    (from every other place when the template uses {source}). It covers the solution, the demo's way back and
+    the sanity runs, so warming these up on the server leaves no caption to encode mid-episode."""
+    moves = solve(len(cfg.pieces), cfg.start, cfg.goal, other_place(cfg.start, cfg.goal))
+    moves += [move for move, _ in sanity_moves(len(cfg.pieces), "all", cfg.start, cfg.goal)]
+    return list(dict.fromkeys(prompt(move, cfg) for move in moves))
+
+
 def describe_move(move: Move, cfg) -> str:
     return f"{piece_name(move.disk, cfg.pieces)}: {cfg.places[move.src]} -> {cfg.places[move.dst]}"
 

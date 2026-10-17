@@ -9,9 +9,12 @@ Each tick k, at an absolute deadline (sleep until spin_margin before it, then sp
 3. pick the command (the next delta added to the last sent command, or a hold that resends it), clamp it,
    and write it unless this is a dry run;
 4. send the next request when the scheduler says so;
-5. hand a TickInfo to the observers.
+5. record the tick's statistics and hand a TickInfo to the observers.
 
-Camera capture, encoding and socket I/O run on their own threads; this thread never waits for them.
+A failed state read does not stop the chunk (the command does not need a fresh state, and the ring gets the
+last good one); only BUS_HOLD_AFTER failures in a row hold the arm, counted as bus_holds, not starved.
+Camera capture, encoding and socket I/O run on their own threads; this thread never waits for them, and it
+takes the statistics lock only after the tick's command is written.
 """
 
 from __future__ import annotations
@@ -28,7 +31,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from . import CAMERAS, CHUNK, EXEC, N_OBS
+from . import CAMERAS, CHUNK, EXEC, N_OBS, STATE_NAMES
 from .chunks import MODES, Planner, clamp
 from .history import Ring
 
@@ -36,8 +39,9 @@ log = logging.getLogger(__name__)
 
 TICK_HISTORY = 216_000  # lateness samples kept for stats(): 2 h at 30 Hz
 PLAN_HISTORY = 20_000
-COUNTERS = ("ticks", "overruns", "holds", "starved", "requests", "plans", "dropped", "stale", "errors", "timeouts",
-            "unmatched", "clamped", "bus_errors", "write_errors", "observer_errors", "stale_frames")
+BUS_HOLD_AFTER = 3  # failed state reads in a row before the arm holds (the loop stops at 30)
+COUNTERS = ("ticks", "overruns", "holds", "starved", "bus_holds", "requests", "plans", "dropped", "stale", "errors",
+            "timeouts", "unmatched", "clamped", "bus_errors", "write_errors", "observer_errors", "stale_frames")
 
 
 @dataclass
@@ -81,8 +85,10 @@ class ControlLoop:
         cfg = cfg or LoopConfig()
         if cfg.mode not in MODES:
             raise ValueError(f"mode must be one of {MODES}")
-        if cfg.joint_limits is not None and np.asarray(cfg.joint_limits, dtype=float).shape != (5, 2):
-            raise ValueError("joint_limits must be 5 x (lo, hi) degrees")
+        if cfg.joint_limits is not None:
+            lim = np.asarray(cfg.joint_limits, dtype=float)
+            if lim.shape != (5, 2) or not (lim[:, 0] < lim[:, 1]).all():
+                raise ValueError("joint_limits must be 5 x (lo, hi) degrees with lo < hi")
         self.cfg = cfg
         self.robot, self.cameras, self.net = robot, cameras, net
         self.cams = tuple(getattr(cameras, "names", CAMERAS))
@@ -124,6 +130,11 @@ class ControlLoop:
     @property
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def pending(self) -> int:
+        """Requests sent and not yet answered, failed or given up (one at most while the loop runs)."""
+        return len(self._requests)
 
     def start(self) -> None:
         """Threads up. The loop holds (resends the last command, no requests) until set_task."""
@@ -185,13 +196,10 @@ class ControlLoop:
         self._release()
 
     def stats(self) -> dict:
-        with self._stats_lock:
-            lateness = np.array(self._lateness)
-            turnaround = np.array(self._turnaround)
-            server = np.array(self._server)
-            rtt = np.array(self._rtt)
-            network = np.array(self._network)
+        with self._stats_lock:  # plain copies only; numpy and the percentiles run outside the lock
+            samples = [list(d) for d in (self._lateness, self._turnaround, self._server, self._rtt, self._network)]
             counts = dict(self._counts)
+        lateness, turnaround, server, rtt, network = (np.array(s, dtype=np.float64) for s in samples)
 
         def pct(a: np.ndarray, q: float) -> float | None:
             return round(float(np.percentile(a, q)), 3) if len(a) else None
@@ -286,7 +294,7 @@ class ControlLoop:
         frames_ok = all(cam in frames for cam in self.cams)
         frame_age = {cam: (t - frame.t) * 1000.0 for cam, frame in frames.items()}
 
-        reset_now = self._apply_pending(state, frames, frames_ok)
+        reset_now = self._apply_pending(k, state, frames, frames_ok)
         last = self._last_cmd
 
         # 1. history
@@ -295,20 +303,24 @@ class ControlLoop:
 
         # 2. replies
         chunk_info = None
+        samples: list[tuple] = []  # (turnaround, rtt, server) ms, recorded in step 5, after the write
         for reply in self.net.poll():
-            info = self._handle_reply(reply, k)
+            info = self._handle_reply(reply, k, samples)
             if info is not None and (chunk_info is None or info["accepted"] or not chunk_info["accepted"]):
                 chunk_info = info
         self._expire_requests(k, t)
 
-        # 3. command
-        nxt = self._planner.step(last) if self._task is not None and bus_ok else None
+        # 3. command: a failed read keeps the chunk going; BUS_HOLD_AFTER of them in a row hold the arm
+        bus_hold = self._bus_failures >= BUS_HOLD_AFTER
+        nxt = self._planner.step(last, k) if self._task is not None and not bus_hold else None
         held = nxt is None
         if held:
             cmd = last
             if self._task is not None:
                 self._counts["holds"] += 1
-                if self._first_chunk and cfg.mode == "prefetch":
+                if bus_hold:
+                    self._counts["bus_holds"] += 1
+                elif self._first_chunk and cfg.mode == "prefetch":
                     self._counts["starved"] += 1
         else:
             cmd = clamp(nxt, last, cfg.joint_limits, cfg.step_max_deg).astype(np.float32)
@@ -331,12 +343,20 @@ class ControlLoop:
             else:
                 self._counts["stale_frames"] += 1
 
-        # 5. observers
+        # 5. statistics and observers
         info = TickInfo(k=k, t=t, state=state, cmd=cmd, held=held, lateness_ms=lateness_ms, frame_age_ms=frame_age,
                         remaining=self._planner.remaining, task=self._task, chunk=chunk_info)
         with self._stats_lock:
             self._lateness.append(lateness_ms)
             self._counts["ticks"] += 1
+            for turnaround_ms, rtt_ms, server_ms in samples:
+                self._turnaround.append(turnaround_ms)
+                if math.isfinite(rtt_ms):
+                    self._rtt.append(rtt_ms)
+                if server_ms is not None:
+                    self._server.append(float(server_ms))
+                    if math.isfinite(rtt_ms):
+                        self._network.append(rtt_ms - float(server_ms))
         for fn in self._observers:
             try:
                 fn(info)
@@ -345,7 +365,7 @@ class ControlLoop:
                 if self._counts["observer_errors"] in (1, 100):
                     log.exception("observer failed (%d so far)", self._counts["observer_errors"])
 
-    def _apply_pending(self, state: np.ndarray, frames: dict, frames_ok: bool) -> bool:
+    def _apply_pending(self, k: int, state: np.ndarray, frames: dict, frames_ok: bool) -> bool:
         """Apply set_task/pause calls in order. Returns True when the ring was reset at this tick."""
         with self._lock:
             if not self._pending:
@@ -359,7 +379,7 @@ class ControlLoop:
                     self._pending[:0] = pending[i:]
                 break
             self._epoch += 1
-            self._planner.reset()
+            self._planner.reset(k)
             self._first_chunk = False
             if item[0] == "pause":
                 self._task = None
@@ -369,7 +389,17 @@ class ControlLoop:
                 self._ring.reset(state, frames)
                 self._last_cmd = state.copy()
                 reset_now = True
+                self._warn_outside_limits(state)
         return reset_now
+
+    def _warn_outside_limits(self, state: np.ndarray) -> None:
+        if self.cfg.joint_limits is None:
+            return
+        outside = [f"{name} {value:.1f} not in [{lo:g}, {hi:g}]"
+                   for name, value, (lo, hi) in zip(STATE_NAMES, state, self.cfg.joint_limits) if not lo <= value <= hi]
+        if outside:
+            log.warning("the arm starts outside its joint limits (%s): those joints may move back in at the planned "
+                        "pace, never further out", "; ".join(outside))
 
     def _submit(self, k: int, t: float) -> None:
         window = self._ring.window()
@@ -379,7 +409,7 @@ class ControlLoop:
         self._planner.sent(k, rid)
         self._counts["requests"] += 1
 
-    def _handle_reply(self, reply, k: int) -> dict | None:
+    def _handle_reply(self, reply, k: int, samples: list) -> dict | None:
         req = self._requests.pop(reply.id, None)
         if req is None:  # a request already given up on (timeout), or an id the server made up
             self._counts["unmatched"] += 1
@@ -393,25 +423,18 @@ class ControlLoop:
                 log.warning("request %s failed: %s", reply.id, reply.error)
             return None
         d = k - req["tick"]
-        self._planner.received(reply.id, d)
+        self._planner.received(reply.id)
         frame_t = min(req["frame_t"].values()) if req["frame_t"] else req["t"]
         turnaround_ms = (reply.recv_t - frame_t) * 1000.0
         server_ms = reply.timing.get("total_ms")
         rtt_ms = (reply.recv_t - reply.sent_t) * 1000.0
-        with self._stats_lock:
-            self._turnaround.append(turnaround_ms)
-            if math.isfinite(rtt_ms):
-                self._rtt.append(rtt_ms)
-            if server_ms is not None:
-                self._server.append(float(server_ms))
-                if math.isfinite(rtt_ms):
-                    self._network.append(rtt_ms - float(server_ms))
+        samples.append((turnaround_ms, rtt_ms, server_ms))
         start = None
         if req["epoch"] != self._epoch or self._task is None:
             reason = "stale"
             self._counts["stale"] += 1
         else:
-            start = self._planner.offer(reply.actions, req["anchor"], d)
+            start = self._planner.offer(reply.actions, req["anchor"], d, k)
             if start is None:
                 reason = "late"
                 self._counts["dropped"] += 1

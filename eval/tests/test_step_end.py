@@ -138,3 +138,57 @@ def test_summary_reports_events_and_gripper_range():
     assert s["phase"] == "fired"
     assert s["gripper_min"] == pytest.approx(5.0) and s["gripper_max"] == pytest.approx(60.0)
     assert [e[0] for e in s["events"]] == ["idle", "closing", "grasped", "released", "fired"]
+
+
+# empty_threshold = 3: closing past it means nothing is between the fingers (decision 05: "closed on a piece")
+MISS = (0.3, 60, 0, 0)             # closing all the way on air
+SHUT = (0.6, 0, 0, 0)              # stays shut a while
+REOPEN = (0.3, 0, 60, 0)
+
+
+def test_a_miss_on_air_is_not_a_grasp():
+    # without the empty check this fired 1 s into the slow re-approach (6 deg/s is below the rest speed)
+    times, states = make_trace([APPROACH, MISS, SHUT, REOPEN, (3.0, 60, 60, 6)])
+    det = AutoEndDetector(low_cfg(empty_threshold=3.0))
+    assert fires(det, times, states) == []
+    assert [p for p, _ in det.events] == ["idle", "closing", "missed", "idle"]
+    assert len(fires(AutoEndDetector(low_cfg()), times, states)) == 1  # no empty_threshold: the old behaviour
+
+
+def test_a_piece_that_slips_out_counts_for_nothing():
+    times, states = make_trace([APPROACH, CLOSE, (0.6, 5, 5, 30), (0.2, 5, 0, 30), REOPEN, REST])
+    det = AutoEndDetector(low_cfg(empty_threshold=3.0))
+    assert fires(det, times, states) == []
+    assert [p for p, _ in det.events] == ["idle", "closing", "grasped", "missed", "idle"]
+
+
+def test_a_close_on_air_after_the_release_keeps_the_release():
+    times, states = make_trace([APPROACH, CLOSE, CARRY, OPEN, MISS, REOPEN, REST])
+    det = AutoEndDetector(low_cfg(empty_threshold=3.0))
+    assert len(fires(det, times, states)) == 1
+    assert [p for p, _ in det.events] == ["idle", "closing", "grasped", "released", "closing", "missed", "released",
+                                          "fired"]
+
+
+def test_a_step_that_starts_between_the_thresholds_arms():
+    # 15 < 20 < 25: neither closed nor open. It used to wait for a full open and never fired.
+    times, states = make_trace([(1.0, 20, 20, 20), (0.3, 20, 5, 0), (1.5, 5, 5, 20), (0.3, 5, 60, 0), REST])
+    det = AutoEndDetector(low_cfg(empty_threshold=3.0))
+    assert len(fires(det, times, states)) == 1
+    assert det.events[0][0] == "idle" and det.events[0][1] == 0.0
+
+
+def test_cmd_signal_measures_rest_on_the_commanded_joints():
+    # dry run: the measured arm is still, the commanded one keeps swinging at 60 deg/s after the release
+    times, cmds = make_trace([APPROACH, CLOSE, CARRY, OPEN, (2.0, 60, 60, 60), REST])
+    states = [np.r_[np.zeros(5), 60.0] for _ in cmds]
+    fired = fires(AutoEndDetector(low_cfg(signal="cmd")), times, states, cmds)
+    swing_end = APPROACH[0] + CLOSE[0] + CARRY[0] + OPEN[0] + 2.0
+    assert len(fired) == 1 and fired[0] == pytest.approx(swing_end + 1.0, abs=2.5 / FPS)
+
+
+def test_cmd_signal_has_no_miss_check():
+    # a commanded gripper closes as far on a piece as on air, so the empty threshold does not apply to it
+    times, cmds = make_trace([APPROACH, MISS, (1.0, 0, 0, 30), REOPEN, REST])
+    states = [np.r_[np.zeros(5), 60.0] for _ in cmds]
+    assert len(fires(AutoEndDetector(low_cfg(signal="cmd", empty_threshold=3.0)), times, states, cmds)) == 1

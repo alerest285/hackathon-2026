@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import msgpack
 import numpy as np
@@ -25,7 +26,8 @@ sys.path.insert(0, str(HERE))
 
 import protocol  # noqa: E402
 import server  # noqa: E402
-from engines.base import pin_revision, synthetic_frames, window_order  # noqa: E402
+from engines import make_engine  # noqa: E402
+from engines.base import override_sampling, pin_revision, synthetic_frames, window_order  # noqa: E402
 from engines.fake import PERIOD_S, FakeEngine, pickplace_pose  # noqa: E402
 from websockets.sync.client import connect  # noqa: E402
 
@@ -126,11 +128,26 @@ def test_window_order_and_revision_pins():
     assert window_order(8, [0, 7]) == [0, 0, 0, 0, 0, 0, 0, 1]
     rev = "62878e2925e59b7a89ec14463ce89932624c490d"
     spec = "black-forest-labs/flux-3-action-base:video_vae.safetensors"
-    assert pin_revision(spec, rev)[0] == f"{spec}@{rev}"
+    assert pin_revision(spec, rev)[0] == f"{spec}@{rev}"  # the config leaves it open: our pin
     assert pin_revision(f"{spec}@{rev}", rev)[0] == f"{spec}@{rev}"
-    pinned, note = pin_revision(f"{spec}@main", rev)
+    # The config pins another commit: its pin wins, so a different --base-revision is an error unless forced.
+    with pytest.raises(ValueError, match="--base-revision ''"):
+        pin_revision(f"{spec}@abc123", rev)
+    pinned, note = pin_revision(f"{spec}@abc123", rev, force=True)
     assert pinned == f"{spec}@{rev}" and note.startswith("WARNING")
+    assert pin_revision(f"{spec}@abc123", None) == (f"{spec}@abc123", "")  # --base-revision '': the config's own
     assert pin_revision(spec, None) == (spec, "")
+
+
+def test_override_sampling_sets_the_config_and_warns_on_a_change():
+    cfg = SimpleNamespace(guidance_scale=3.0, guidance_scale_action=None, num_inference_steps=4)
+    assert override_sampling(cfg) == [] and cfg.guidance_scale_action is None
+    assert override_sampling(cfg, (3.0, 3.0), 4) == []  # the same values: no warning
+    notes = override_sampling(cfg, (1.0, 1.0), 2)
+    assert (cfg.guidance_scale, cfg.guidance_scale_action, cfg.num_inference_steps) == (1.0, 1.0, 2)
+    assert len(notes) == 2 and all(n.startswith("WARNING") for n in notes) and "3/3" in notes[0]
+    with pytest.raises(ValueError):
+        override_sampling(cfg, steps=0)
 
 
 def test_server_imports_without_torch_or_gpu_engines():
@@ -148,6 +165,19 @@ def test_hello_has_the_architecture_fields():
     assert hello["snapshots"] == [0, 7] and hello["cameras"] == ["scene", "wrist"]
     assert hello["state_names"] == list(protocol.STATE_NAMES)
     assert hello["guidance"] == [3.0, 3.0] and hello["steps"] == 4 and hello["warm"] is True
+    assert hello["warm_tasks"] == [TASK]
+
+
+def test_guidance_and_steps_flags_reach_the_engine_and_hello():
+    args = server.parse_args(["--engine", "fake", "--guidance", "1", "1", "--steps", "2"])
+    engine = make_engine("fake", **server.engine_kwargs(args))
+    hello = server.PolicyServer(engine).hello_message()
+    assert hello["guidance"] == [1.0, 1.0] and hello["steps"] == 2
+    gpu = server.engine_kwargs(server.parse_args(["--force-base-revision"]))
+    assert gpu["force_base_revision"] is True and gpu["guidance"] is None and gpu["steps"] is None
+    for bad in (["--steps", "0"], ["--guidance", "nan", "1"]):
+        with pytest.raises(SystemExit):
+            server.parse_args(bad)
 
 
 def test_ping_gets_pong_with_the_client_time_echoed():
@@ -319,6 +349,7 @@ def test_selftest_cli_passes_with_the_fake_engine():
     )
     assert out.returncode == 0, out.stdout + out.stderr
     assert out.stdout.strip().endswith("PASS") and "infer ms p50" in out.stdout
+    assert "first warmup plan" in out.stdout
 
 
 def test_cli_server_serves_logs_and_stops_on_ctrl_c(tmp_path):
@@ -349,7 +380,37 @@ def test_cli_server_serves_logs_and_stops_on_ctrl_c(tmp_path):
             proc.kill()
     assert f"listening on ws://127.0.0.1:{port}" in output and "infer id=5 tick=77" in output
     assert "stopped" in output
+    assert hello["warm_tasks"] == [server.DEFAULT_TASK] and TASK != server.DEFAULT_TASK
+    assert output.count("WARNING: caption not warmed up") == 1  # TASK was never warmed up
     events = [json.loads(line) for f in tmp_path.glob("so101-*.jsonl") for line in f.read_text().splitlines()]
     infer = [e for e in events if e["event"] == "infer"]
     assert [e["event"] for e in events][0] == "start" and len(infer) == 1
     assert infer[0]["id"] == 5 and len(infer[0]["actions"]) == 42 and "images" not in infer[0]
+
+
+# ---- engine logic that runs without torch (keep after test_server_imports_without_torch_or_gpu_engines) ----
+def test_flux_action_compile_falls_back_to_eager_when_the_compiled_warmup_fails():
+    from engines.base import Engine
+    from engines.flux_action import FluxActionEngine  # torch is imported only by __init__, which is skipped
+
+    class Dit:
+        def forward(self):
+            return "eager"
+
+    dit = Dit()
+    dit.forward = lambda: "compiled"  # an instance attribute, as the engine sets torch.compile's wrapper
+    engine = FluxActionEngine.__new__(FluxActionEngine)
+    Engine.__init__(engine)
+    engine.policy, engine.compiled, engine.device = SimpleNamespace(dit=dit), True, SimpleNamespace(type="cpu")
+    engine.meta = {"chunk": 42, "cameras": ["scene", "wrist"], "compile": "dit (experimental)"}
+
+    def infer(state, cmd_hist, frames, task):
+        if dit.forward() == "compiled":
+            raise RuntimeError("dynamo failed")
+        return np.tile(cmd_hist[-1], (42, 1))
+
+    engine.infer = infer
+    engine.warmup(TASK)
+    assert engine.compiled is False and dit.forward() == "eager"
+    assert engine.meta["compile"] is False and "dynamo failed" in engine.meta["compile_failed"]
+    assert engine.warm and engine.warm_tasks == [TASK] and engine.first_plan_ms is not None

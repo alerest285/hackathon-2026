@@ -1,5 +1,6 @@
 """Engine interface and helpers shared by the engines. No torch here."""
 
+import math
 import os
 import time
 
@@ -19,6 +20,8 @@ class Engine:
     def __init__(self):
         self.meta: dict = {}
         self.warm = False
+        self.warm_tasks: list[str] = []  # captions encoded and cached by warmup()
+        self.first_plan_ms: float | None = None  # plan 1 of the first warmup: compile, kernels and the caption
 
     def infer(self, state: np.ndarray, cmd_hist: np.ndarray, frames: dict, task: str) -> np.ndarray:
         raise NotImplementedError
@@ -34,6 +37,10 @@ class Engine:
             if actions.shape != (self.meta.get("chunk", 42), 6) or not np.isfinite(actions).all():
                 raise RuntimeError(f"warmup produced invalid actions {actions.shape}")
         self.warm = True
+        if self.first_plan_ms is None:
+            self.first_plan_ms = times[0]
+        if task not in self.warm_tasks:
+            self.warm_tasks.append(task)
         print(f"warmup: {task!r} plan 1 {times[0]:.1f} ms, plan 2 {times[1]:.1f} ms", flush=True)
 
 
@@ -57,20 +64,52 @@ def window_order(n_obs: int, snapshots: list[int]) -> list[int]:
     return order
 
 
-def pin_revision(spec: str | None, revision: str | None) -> tuple[str | None, str]:
+def pin_revision(spec: str | None, revision: str | None, force: bool = False) -> tuple[str | None, str]:
     """Pin a Hub weight spec ``repo_id[:file][@revision]`` to ``revision``. Returns (spec, note).
 
-    Local paths, empty specs and an empty pin pass through unchanged. An explicit pin wins over a
-    different revision in the checkpoint config, and the note says so.
+    The checkpoint config's own pin wins, as in flux-action and LeRobot: a spec without a revision gets
+    ``@revision``, a spec pinned to the same revision stays, and a spec pinned to a different one raises
+    ValueError unless ``force``, which loads ``revision`` instead. Local paths, empty specs and an empty
+    pin pass through unchanged.
     """
     if not spec or not revision or os.path.exists(spec):
         return spec, ""
     body, _, current = spec.partition("@")
     if current == revision:
-        return spec, f"{body} pinned at @{revision[:8]} by the checkpoint config"
-    if current:
-        return f"{body}@{revision}", f"WARNING: checkpoint config pins {spec}; using @{revision[:8]} instead"
-    return f"{body}@{revision}", f"{body} pinned to @{revision[:8]}"
+        return spec, f"{body} pinned at @{revision[:8]} by the checkpoint config, as --base-revision says"
+    if not current:
+        return f"{body}@{revision}", f"{body} has no pin in the checkpoint config; pinned to @{revision[:8]}"
+    if not force:
+        raise ValueError(
+            f"the checkpoint config pins {spec}, but --base-revision is @{revision[:8]}. Pass --base-revision '' "
+            f"to load the checkpoint's own pin (what flux-action and LeRobot do), --base-revision {current} to "
+            f"name it, or --force-base-revision to load @{revision[:8]} anyway"
+        )
+    return f"{body}@{revision}", f"WARNING: checkpoint config pins {spec}; --force-base-revision loads @{revision[:8]}"
+
+
+def override_sampling(cfg, guidance=None, steps: int | None = None) -> list[str]:
+    """Set guidance (video, action) and the step count on a policy config. Both engines read them at every
+    plan, and guidance 1/1 skips the unconditional pass. Returns a WARNING line per value that differs
+    from the checkpoint's (decision 06: such a change is its own decision)."""
+    notes = []
+    if guidance is not None:
+        video, action = (float(g) for g in guidance)
+        if not (math.isfinite(video) and math.isfinite(action)):
+            raise ValueError(f"guidance must be finite, got {video}/{action}")
+        action_before = cfg.guidance_scale if cfg.guidance_scale_action is None else cfg.guidance_scale_action
+        before = (float(cfg.guidance_scale), float(action_before))
+        cfg.guidance_scale, cfg.guidance_scale_action = video, action
+        if before != (video, action):
+            notes.append(f"WARNING: guidance {video:g}/{action:g} instead of the checkpoint's {before[0]:g}/{before[1]:g}")
+    if steps is not None:
+        if int(steps) < 1:
+            raise ValueError(f"steps must be >= 1, got {steps}")
+        before_steps = cfg.num_inference_steps
+        cfg.num_inference_steps = int(steps)
+        if before_steps != int(steps):
+            notes.append(f"WARNING: {int(steps)} sampling steps instead of the checkpoint's {before_steps}")
+    return notes
 
 
 def synthetic_frames(size: int = 256, seed: int = 0) -> np.ndarray:

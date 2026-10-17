@@ -94,3 +94,17 @@ def test_all_problems_are_listed_at_once():
     assert "start must be one of" in message
     assert "step_timeout_s must be > 0" in message
     assert "pieces must be a non-empty list" in message
+
+
+def test_empty_threshold_lies_beyond_closed_in_the_closed_direction():
+    assert load_config(CONFIG).auto_end.empty_threshold == 3.0
+    assert from_dict({}).auto_end.empty_threshold is None  # absent: no miss check
+    assert from_dict({"auto_end": {"empty_threshold": 2}}).auto_end.empty_threshold == 2.0
+    with pytest.raises(ConfigError, match="empty_threshold must be below closed_threshold"):
+        from_dict({"auto_end": {"empty_threshold": 20.0}})
+    high = {"closed_is": "high", "closed_threshold": 85.0, "open_threshold": 75.0}
+    assert from_dict({"auto_end": {**high, "empty_threshold": 97.0}}).auto_end.empty_threshold == 97.0
+    with pytest.raises(ConfigError, match="empty_threshold must be above closed_threshold"):
+        from_dict({"auto_end": {**high, "empty_threshold": 3.0}})
+    with pytest.raises(ConfigError, match="empty_threshold must be a number"):
+        from_dict({"auto_end": {"empty_threshold": "low"}})

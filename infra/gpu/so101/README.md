@@ -23,28 +23,39 @@ at a time on a worker thread, and pings are answered while it runs. It binds 127
    never put it in the repo or a log line.
 3. `bash infra/gpu/so101/serve.sh --selftest`. The first run downloads the policy and both shared encoders into
    the HF cache. It prints p50/p95/max ms per plan over 50 plans, peak GPU memory, and PASS or FAIL.
-4. Serve inside tmux:
+4. Serve inside tmux, with one `--warmup-task` per Hanoi instruction, so no caption is encoded for the first time
+   mid-episode. On the Mac, `uv run --project eval python eval/run_hanoi.py --print-warmup` prints this command
+   with every prompt the eval config can produce (9 with the default config):
 
    ```sh
    bash infra/gpu/so101/serve.sh --log-dir ~/so101-logs \
-     --warmup-task "pick up the small red disk and place it on the right peg" --warmup-task "..."
+     --warmup-task 'pick up the small disk and place it on the right peg' --warmup-task '...'
    ```
 
-   Repeat `--warmup-task` for every Hanoi instruction, so no caption is encoded for the first time mid-episode.
+   A plan whose caption was not warmed up prints a `WARNING: caption not warmed up` line, and hello lists the
+   warmed captions in `warm_tasks`, which eval checks when it connects.
 5. On the Mac: `infra/aws/ssh.sh` (it forwards 8000), or `ssh -N -L 8000:localhost:8000 ubuntu@<host>`. The
    client connects to `ws://localhost:8000`.
 
 Pins (decision 06): checkpoint `c9e13b2aca6a0a472b3ea03fd90cff32d3e85849` (`--revision`), shared VAE and text
 encoder `62878e2925e59b7a89ec14463ce89932624c490d` (`--base-revision`). The checkpoint config names the encoders
 (`video_vae_id`, `text_encoder_id`, Hub specs of the form `repo[:file][@revision]`), and both upstream docs say
-it references a pinned base revision. The engines set `@<--base-revision>` on those specs, print which pin is in
-force, and print a WARNING if the config pins a different one. `--base-revision ''` keeps what the config says.
+it references a pinned base revision. That config is gated and nobody has read it yet, so the config's own pin
+wins, as in both upstream loaders: `--base-revision` pins only a spec without one, and a config that pins a
+different commit stops the server before the weights load, with the commit in the message. Then either pass
+`--base-revision ''` (the checkpoint's pin, what upstream does) or `--force-base-revision` (decision 06's pin), and
+correct decision 06. The first lines of every start print the config's specs; hello and `--selftest` show them as
+`config_video_vae_id`/`config_text_encoder_id` next to the specs in force.
+
+Sampling: `--guidance VIDEO ACTION` and `--steps N` override the checkpoint's 3/3 and 4 and print a WARNING.
+Guidance 1/1 runs one pass per step instead of two (about half the compute), and decision 06 keeps it as the
+fallback if 3/3 misses the 533 ms budget; hello and the selftest line report the values in force.
 
 ## Engines
 
 | Engine | Path | `--compile` |
 |---|---|---|
-| `flux-action` (default, decision 03) | `load_policy(repo, revision)`, `set_text_encoder_offload(True)` before `.to("cuda")`, `predict_action_chunk` on the explicit window | wraps the DiT forward in `torch.compile`, as LeRobot's `compile_model` does. flux-action itself compiles only the DROID geometry |
+| `flux-action` (default, decision 03) | `load_policy(repo, revision)`, `set_text_encoder_offload(True)` before `.to("cuda")`, `predict_action_chunk` on the explicit window | **experimental**: wraps the DiT forward in `torch.compile`, as LeRobot's `compile_model` does. flux-action itself compiles only the DROID geometry, and nobody has compiled the real SO-101 DiT this way. If the first warmup plan fails compiled, the engine goes back to eager, prints a WARNING and reports `compile: false` plus `compile_failed` in hello |
 | `lerobot` | `Flux3Policy.from_pretrained` + the saved processors, stateless `observation.command_history` branch; `--adapter DIR` loads a PEFT/LoRA adapter (milestone 4) | sets `compile_model` before construction: DiT forward, VAE and Qwen layers |
 | `fake` | no torch; `--fake-mode hold\|sine\|pickplace`, `--fake-latency-ms`, `--fake-jitter-ms`, `--fake-period-s` (pickplace cycle, default 9 s) | ignored |
 
@@ -56,10 +67,14 @@ The A/B, one self-test each:
 
 ```sh
 bash infra/gpu/so101/serve.sh --selftest                              # flux-action, eager
-bash infra/gpu/so101/serve.sh --selftest --compile                    # flux-action, compiled DiT
+bash infra/gpu/so101/serve.sh --selftest --compile                    # flux-action, compiled DiT (experimental)
 bash infra/gpu/so101/serve.sh --selftest --engine lerobot             # lerobot, eager
 bash infra/gpu/so101/serve.sh --selftest --engine lerobot --compile   # lerobot, compile_model
+bash infra/gpu/so101/serve.sh --selftest --guidance 1 1               # only if 3/3 misses the budget (decision 06)
 ```
+
+The selftest line prints the first warmup plan (compile, kernels and the caption) next to the steady-state p50,
+so a compiled run that graph-breaks into something slower than eager shows up there.
 
 ## What to log (AGENTS.md section 5)
 
@@ -76,10 +91,13 @@ Then the round trip through the tunnel (milestone 2), and the decision record wi
 
 - Every message is a msgpack map with a `"type"` key: `hello`, `ping`, `pong`, `infer`, `chunk`, `error`.
   The fields are the ones in the architecture table.
-- `hello` also carries the engine's settings: `sampler`, `seed`, `dtype`, `compile`, `offload_text_encoder`,
-  `device`, `gpu`, `torch`, the upstream commit, `video_vae_id`, `text_encoder_id`, and the checkpoint's
-  normalization ranges `state_q01`/`state_q99`/`action_q01`/`action_q99`. A client can compare its measured
-  state against `state_q01..q99` to catch a units or calibration mismatch before the arm moves.
+- `hello` also carries the engine's settings: `sampler`, `seed`, `dtype`, `compile` (plus `compile_failed` after
+  a fallback), `offload_text_encoder`, `device`, `gpu`, `torch`, the upstream commit, `video_vae_id` and
+  `text_encoder_id` in force next to the checkpoint config's `config_video_vae_id`/`config_text_encoder_id`, the
+  lerobot engine's `base`/`base_revision` (what it loaded, which an adapter can change), `warm_tasks` (the
+  captions warmed up), and the checkpoint's normalization ranges `state_q01`/`state_q99`/`action_q01`/`action_q99`.
+  A client can compare its measured state against `state_q01..q99` to catch a units or calibration mismatch
+  before the arm moves. `guidance` is `[video, action]`.
 - Frames are decoded with Pillow (OpenCV if Pillow is missing) to RGB. All four frames of a request must share
   one size; send 256x256, which the model's side-by-side layout uses as is.
 - Validation errors come back at once with the request's `id`; decode and engine errors come back after the
@@ -93,7 +111,7 @@ Then the round trip through the tunnel (milestone 2), and the decision record wi
 One stdout line per request (this one from the fake engine):
 
 ```
-13:02:39.729 infer id=1 tick=101 queue 0.1 decode 0.9 infer 0.1 total 1.1 ms  256x256 jpeg 101 KB  127.0.0.1:55191  'pick up the small red disk'
+13:02:39.729 infer id=1 tick=101 queue 0.1 decode 0.9 infer 0.1 total 1.1 ms  256x256 jpeg 101 KB  127.0.0.1:55191  'pick up the small disk and place it on the right peg'
 ```
 
 With `--log-dir DIR`, `DIR/so101-<UTC stamp>.jsonl` gets one line per event: `start` (hello, argv), `connect`,
@@ -105,11 +123,12 @@ No images.
 | Symptom | Fix |
 |---|---|
 | 401/403, `GatedRepoError` | accept both licences with the account whose token is logged in, then `hf auth login` |
+| `the checkpoint config pins ... but --base-revision is ...` | the checkpoint names another encoder commit than decision 06: rerun with `--base-revision ''` (its own pin), log it, correct decision 06 |
 | `No module named 'natten'`, VAE fails to build | a `uv sync` removed NATTEN; re-run `infra/gpu/bootstrap.sh` (or `bootstrap-lerobot.sh`). websockets and msgpack are reinstalled by `serve.sh` on start |
 | CUDA out of memory | keep the default text-encoder offload; check `nvidia-smi` for another server on the GPU |
 | `cannot listen on 127.0.0.1:8000` | another server holds the port (`ss -ltnp \| grep 8000`), or pass `--port` |
 | the Mac cannot connect | is the tunnel up? The server listens on 127.0.0.1 only, by design |
-| the first plan of a new instruction is slow | the caption is being encoded (the offloaded Qwen visits the GPU once per caption) or the model is compiling; warm up every instruction with `--warmup-task` |
+| the first plan of a new instruction is slow, `WARNING: caption not warmed up` | the caption is being encoded (the offloaded Qwen visits the GPU once per caption) or the model is compiling; warm up every instruction with `--warmup-task` (`eval/run_hanoi.py --print-warmup`) |
 | `lerobot` engine, new captions take seconds | its offloaded Qwen encodes on the CPU (LeRobot's documented low-VRAM mode). Warm up every caption, or `--text-encoder-on-gpu`. With `--compile` the Qwen layers compile on the CPU, which needs a C++ compiler |
 | self-test prints FAIL | the traceback is printed above the FAIL line |
 
@@ -122,10 +141,11 @@ uv run --python 3.13 --with pytest --with websockets --with msgpack --with numpy
   pytest infra/gpu/so101/tests -q
 ```
 
-17 tests, a few seconds, no torch: hello fields, ping/pong, infer in jpeg/png/raw (hold mode returns `cmd_hist[-1]`),
+20 tests, a few seconds, no torch: hello fields, ping/pong, infer in jpeg/png/raw (hold mode returns `cmd_hist[-1]`),
 malformed requests on a connection that stays usable, pongs under 50 ms during a 300 ms plan, replies in
-order, the busy limit, the fake motion modes and `--fake-period-s`, `--selftest`, and the CLI server with
-`--log-dir` and Ctrl-C. The Mac client is tested against this server in `eval/tests/test_e2e_socket.py`: the
+order, the busy limit, the fake motion modes and `--fake-period-s`, `--selftest`, the CLI server with
+`--log-dir`, Ctrl-C and the unwarmed-caption warning, the encoder pin rule, `--guidance`/`--steps`, and the
+flux-action fallback from a failed compiled warmup to eager. The Mac client is tested against this server in `eval/tests/test_e2e_socket.py`: the
 server runs as a subprocess with the fake engine, and a full Hanoi episode goes through `robot/`'s `NetClient`.
 
 ## Verified on 17.10.2026 (Mac, no GPU)
@@ -141,4 +161,6 @@ server runs as a subprocess with the fake engine, and a full Hanoi episode goes 
 ## Not verified yet
 
 - Real weights on a GPU: download, load, memory, latency. That is the first `--selftest` on the box.
+- Which encoder commit the gated checkpoint config pins: the first start prints it.
+- `--compile` on the real SO-101 DiT (flux-action engine).
 - `bootstrap-lerobot.sh` on the box, and loading a real LoRA adapter (`--adapter`).

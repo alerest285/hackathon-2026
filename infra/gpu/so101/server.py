@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import io
 import json
+import math
 import socket
 import sys
 import time
@@ -31,7 +32,8 @@ from engines.base import synthetic_window
 DEFAULT_CHECKPOINT = "black-forest-labs/flux-3-action-so101"
 DEFAULT_REVISION = "c9e13b2aca6a0a472b3ea03fd90cff32d3e85849"
 DEFAULT_BASE_REVISION = "62878e2925e59b7a89ec14463ce89932624c490d"
-DEFAULT_TASK = "pick up the small red disk and place it on the right peg"
+# Step 1 of eval/config/hanoi.toml. Warm up every instruction: `eval/run_hanoi.py --print-warmup` prints the flags.
+DEFAULT_TASK = "pick up the small disk and place it on the right peg"
 FAKE_MODES = ("hold", "sine", "pickplace")
 MAX_PENDING = 8  # queued infer requests per connection before the server answers "busy"
 HELLO_DEFAULTS = {
@@ -204,9 +206,11 @@ class PolicyServer:
         self.cameras = tuple(self.hello["cameras"])
         self.n_obs, self.chunk = int(self.hello["n_obs"]), int(self.hello["chunk"])
         self.n_frames = len(self.hello["snapshots"])
+        self.seen_tasks = set(getattr(engine, "warm_tasks", ()))  # captions whose text context is cached
 
     def hello_message(self) -> dict:
-        return {**self.hello, "warm": bool(self.engine.warm)}
+        warm_tasks = list(getattr(self.engine, "warm_tasks", ()))
+        return {**self.hello, "warm": bool(self.engine.warm), "warm_tasks": warm_tasks}
 
     async def serve(self, host: str, port: int, ready=None, stop: asyncio.Event | None = None) -> None:
         """Listen until ``stop`` is set (forever without one). ``ready(port)`` is called once bound."""
@@ -305,6 +309,13 @@ class PolicyServer:
             f"infer {timing['infer_ms']:.1f} total {timing['total_ms']:.1f} ms  {hw[0]}x{hw[1]} "
             f"{req.image_format} {nbytes / 1024:.0f} KB  {peer}  {req.task[:60]!r}"
         )
+        if req.task not in self.seen_tasks:
+            self.seen_tasks.add(req.task)
+            say(
+                f"WARNING: caption not warmed up, so this plan encoded it ({timing['infer_ms']:.0f} ms): "
+                f"{req.task[:80]!r}. Start the server with --warmup-task for every instruction "
+                "(eval/run_hanoi.py --print-warmup prints them)"
+            )
         self._jsonl(
             "infer",
             peer=peer,
@@ -353,6 +364,13 @@ def selftest(engine, executor: ThreadPoolExecutor, n: int, task: str) -> bool:
     )
     keys = ("steps", "guidance", "sampler", "seed", "dtype", "compile", "offload_text_encoder", "device", "gpu")
     say(f"selftest: {engine.name} {json.dumps({k: hello[k] for k in keys if k in hello})}")
+    if "video_vae_id" in hello:
+        say(
+            f"selftest: encoders {hello['video_vae_id']} and {hello['text_encoder_id']} (checkpoint config: "
+            f"{hello.get('config_video_vae_id')} and {hello.get('config_text_encoder_id')})"
+        )
+    if hello.get("compile_failed"):
+        say(f"selftest: WARNING: --compile failed in warmup and the engine runs eager: {hello['compile_failed']}")
     say(f"selftest: {n} plans, request {len(raw) / 1024:.0f} KB (4 JPEG q95 frames 256x256), task {task!r}")
     torch = sys.modules.get("torch")
     cuda = torch is not None and torch.cuda.is_available()
@@ -375,9 +393,11 @@ def selftest(engine, executor: ThreadPoolExecutor, n: int, task: str) -> bool:
         outs.append(actions)
     if infer_ms:
         p50, p95 = np.percentile(infer_ms, [50, 95])
+        first = getattr(engine, "first_plan_ms", None)
         say(
             f"selftest: infer ms p50 {p50:.1f}  p95 {p95:.1f}  max {max(infer_ms):.1f}  "
-            f"(decode p50 {np.percentile(decode_ms, 50):.2f} ms, {len(infer_ms)} plans)"
+            f"(decode p50 {np.percentile(decode_ms, 50):.2f} ms, {len(infer_ms)} plans"
+            + (f"; first warmup plan {first:.1f} ms, with compile, kernels and the caption)" if first else ")")
         )
     if cuda:
         gib = 2**30
@@ -408,11 +428,28 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument(
         "--base-revision",
         default=DEFAULT_BASE_REVISION,
-        help="commit of black-forest-labs/flux-3-action-base for the video VAE and text encoder "
-        "('' = whatever the checkpoint config says)",
+        help="commit of black-forest-labs/flux-3-action-base for encoder specs the checkpoint config leaves "
+        "unpinned; a config that pins another commit is an error ('' = whatever the checkpoint config says)",
     )
+    p.add_argument(
+        "--force-base-revision",
+        action="store_true",
+        help="load --base-revision even where the checkpoint config pins a different commit",
+    )
+    p.add_argument(
+        "--guidance",
+        nargs=2,
+        type=float,
+        metavar=("VIDEO", "ACTION"),
+        help="override the checkpoint's guidance (3 3); 1 1 skips the unconditional pass, about half the compute",
+    )
+    p.add_argument("--steps", type=int, help="override the checkpoint's sampling steps (4)")
     p.add_argument("--device", default="cuda")
-    p.add_argument("--compile", action="store_true", help="flux-action: torch.compile the DiT; lerobot: compile_model")
+    p.add_argument(
+        "--compile",
+        action="store_true",
+        help="flux-action: torch.compile the DiT (experimental; eager again if warmup fails); lerobot: compile_model",
+    )
     p.add_argument("--adapter", help="PEFT/LoRA adapter directory (lerobot engine)")
     p.add_argument("--text-encoder-on-gpu", action="store_true", help="keep Qwen on the GPU (default: offloaded)")
     p.add_argument("--fake-mode", choices=FAKE_MODES, default="pickplace")
@@ -427,12 +464,18 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument("--selftest", action="store_true", help="time --n plans on a synthetic window, print PASS/FAIL")
     p.add_argument("--n", type=int, default=50, help="plans in --selftest")
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+    if args.steps is not None and args.steps < 1:
+        p.error("--steps must be >= 1")
+    if args.guidance is not None and not all(math.isfinite(g) for g in args.guidance):
+        p.error("--guidance takes two finite numbers")
+    return args
 
 
 def engine_kwargs(args: argparse.Namespace) -> dict:
+    sampling = {"guidance": tuple(args.guidance) if args.guidance else None, "steps": args.steps}
     if args.engine == "fake":
-        kw = {"mode": args.fake_mode, "latency_ms": args.fake_latency_ms, "jitter_ms": args.fake_jitter_ms}
+        kw = {"mode": args.fake_mode, "latency_ms": args.fake_latency_ms, "jitter_ms": args.fake_jitter_ms, **sampling}
         if args.fake_period_s is not None:
             kw["period_s"] = args.fake_period_s
         return kw
@@ -440,9 +483,11 @@ def engine_kwargs(args: argparse.Namespace) -> dict:
         "checkpoint": args.checkpoint,
         "revision": args.revision or None,
         "base_revision": args.base_revision or None,
+        "force_base_revision": args.force_base_revision,
         "device": args.device,
         "compile": args.compile,
         "offload_text_encoder": not args.text_encoder_on_gpu,
+        **sampling,
     }
     if args.engine == "lerobot":
         kw["adapter"] = args.adapter

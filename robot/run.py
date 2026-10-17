@@ -59,10 +59,15 @@ def parse_args(argv=None):
 
 
 def load_limits(path: Path | None):
+    """{joint: [lo, hi]} for the 5 joints (readout.py --save-limits). Raises ValueError unless lo < hi."""
     if path is None:
         return None
     data = json.loads(path.read_text())
-    return tuple((float(data[name][0]), float(data[name][1])) for name in STATE_NAMES[:5])
+    limits = tuple((float(data[name][0]), float(data[name][1])) for name in STATE_NAMES[:5])
+    bad = [name for name, (lo, hi) in zip(STATE_NAMES, limits) if not lo < hi]
+    if bad:
+        raise ValueError(f"{path}: each joint needs lo < hi, not for {', '.join(bad)}")
+    return limits
 
 
 def build(a):
@@ -133,11 +138,16 @@ def main(argv=None) -> int:
     a = parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+    try:
+        limits = load_limits(a.limits)
+    except (OSError, KeyError, ValueError) as e:
+        print(f"--limits: {type(e).__name__}: {e}")
+        return 2
     log_dir = a.log_dir or HERE / "runs" / stamp
     log_dir.mkdir(parents=True, exist_ok=True)
     dry_run = not (a.live or a.fake_robot)
     cfg = LoopConfig(mode=a.mode, period=a.period, crossfade=a.crossfade, step_max_deg=a.step_max,
-                     joint_limits=load_limits(a.limits), dry_run=dry_run)
+                     joint_limits=limits, dry_run=dry_run)
     robot, cameras, net = build(a)
     where = "fake robot" if a.fake_robot else f"SO-101 {a.robot_id} on {a.port}"
     print(f"run: task {a.task!r}, mode {a.mode}, {where}, "
@@ -209,7 +219,8 @@ def main(argv=None) -> int:
 
     print("\ntiming summary")
     for key in ("ticks", "overruns", "lateness_p50_ms", "lateness_p99_ms", "lateness_max_ms", "requests", "plans",
-                "holds", "starved", "dropped", "stale", "errors", "timeouts", "clamped", "d_max", "turnaround_p50_ms",
+                "holds", "starved", "bus_holds", "dropped", "stale", "errors", "timeouts", "clamped", "d_max",
+                "turnaround_p50_ms",
                 "turnaround_p95_ms", "turnaround_max_ms", "server_p50_ms", "server_p95_ms", "rtt_p50_ms", "rtt_p95_ms",
                 "network_p50_ms", "network_p95_ms", "bus_errors", "write_errors", "stale_frames"):
         print(f"  {key:20s} {stats[key]}")

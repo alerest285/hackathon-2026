@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 import datetime as dt
 import json
 import logging
@@ -89,7 +90,10 @@ def _floats(values, digits: int) -> list[float]:
 
 class EpisodeRecorder:
     """Writes one episode directory. on_tick() runs on the control thread and only copies and queues;
-    a background thread turns ticks into ticks.jsonl. Chunks are kept in memory and saved on close()."""
+    a background thread turns ticks into ticks.jsonl. Chunks are kept in memory and saved on close().
+
+    A chunk belongs to the attempt that was running at its request tick, not at its arrival: the reply to
+    an attempt's last request often arrives after that attempt ended."""
 
     def __init__(self, directory: str | Path):
         self.dir = Path(directory)
@@ -99,6 +103,8 @@ class EpisodeRecorder:
         self.tick_errors = 0
         self.ticks_per_attempt: dict[int, int] = {}
         self.chunks: list[dict] = []
+        self._span_k: list[int] = []  # first tick of each run of ticks with one attempt value (None between attempts)
+        self._span_attempt: list[int | None] = []
         self._q: queue.SimpleQueue = queue.SimpleQueue()
         self._lateness: list[float] = []
         self._frame_age: dict[str, list[float]] = {}
@@ -117,6 +123,9 @@ class EpisodeRecorder:
         self.tick_count += 1
         if attempt is not None:
             self.ticks_per_attempt[attempt] = self.ticks_per_attempt.get(attempt, 0) + 1
+        if not self._span_attempt or self._span_attempt[-1] != attempt:
+            self._span_k.append(info.k)
+            self._span_attempt.append(attempt)
         chunk = getattr(info, "chunk", None)
         meta = None
         if chunk:
@@ -126,7 +135,7 @@ class EpisodeRecorder:
                 {
                     **meta,
                     "k": info.k,
-                    "attempt": attempt,
+                    "attempt": self.attempt_at(chunk.get("tick")),
                     "actions": None if actions is None else np.array(actions, dtype=np.float32, copy=True),
                 }
             )
@@ -185,6 +194,13 @@ class EpisodeRecorder:
                         self._frame_age.setdefault(cam, []).append(float(v))
                 if self._q.empty():
                     f.flush()
+
+    def attempt_at(self, tick) -> int | None:
+        """The attempt running at control tick `tick`; None between attempts or before this episode."""
+        if tick is None:
+            return None
+        i = bisect.bisect_right(self._span_k, int(tick)) - 1
+        return self._span_attempt[i] if i >= 0 else None
 
     def chunks_in(self, attempt: int) -> int:
         return sum(1 for c in self.chunks if c["attempt"] == attempt)

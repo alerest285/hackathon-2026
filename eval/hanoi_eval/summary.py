@@ -3,7 +3,8 @@
     uv run --project eval python -m hanoi_eval.summary eval/runs/<run>            # rewrite one run's summary
     uv run --project eval python -m hanoi_eval.summary --status eval/runs/*       # one status row per run
 
-Episodes that ended with q (aborted) are listed but left out of the totals.
+Episodes that ended with q (aborted) or with an infrastructure error (the control loop stopped, the server
+went away) are listed but left out of the totals: neither is a result of the policy.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 from .recorder import write_json
+
+NOT_COUNTED = ("quit", "error")  # episode ends left out of the totals
 
 
 def fmt_duration(seconds: float | None) -> str:
@@ -30,6 +33,8 @@ def end_text(ep: dict) -> str:
         return f"step {ep['failed_step']} failed ({ep['failed_reason']})"
     if ep["end"] == "quit":
         return f"aborted (q) at step {ep['steps_completed'] + 1}"
+    if ep["end"] == "error":
+        return f"infrastructure error at step {ep['steps_completed'] + 1}: {ep.get('error')}"
     return ep["end"]
 
 
@@ -40,13 +45,14 @@ def run_kind(run: dict) -> str:
 
 
 def summarize(run: dict, episodes: list[dict], attempts: list[dict]) -> dict:
-    counted = [e for e in episodes if e["end"] != "quit"]
+    counted = [e for e in episodes if e["end"] not in NOT_COUNTED]
     counted_ids = {e["episode"] for e in counted}
     counted_attempts = [a for a in attempts if a["episode"] in counted_ids and a.get("success") is not None]
     steps_total = sum(e["steps_total"] for e in counted)
     totals = {
         "episodes": len(counted),
-        "aborted": len(episodes) - len(counted),
+        "aborted": sum(1 for e in episodes if e["end"] == "quit"),
+        "errors": sum(1 for e in episodes if e["end"] == "error"),
         "episode_successes": sum(1 for e in counted if e["success"]),
         "successful_attempts": sum(1 for a in counted_attempts if a["success"]),
         "total_attempts": len(counted_attempts),
@@ -70,7 +76,7 @@ def summarize(run: dict, episodes: list[dict], attempts: list[dict]) -> dict:
             "wall_s": e["wall_s"],
             "interventions": e["interventions"],
             "end": end_text(e),
-            "counted": e["end"] != "quit",
+            "counted": e["end"] not in NOT_COUNTED,
         }
         for e in episodes
     ]
@@ -160,11 +166,15 @@ def render_markdown(summary: dict) -> str:
         f"completed steps {t['completed_steps']}/{t['steps_possible']} · "
         f"mean steps in a row {t['mean_steps_in_row'] if t['mean_steps_in_row'] is not None else '-'} · "
         f"interventions {t['interventions']}"
-        + (f" · aborted episodes not counted: {t['aborted']}" if t["aborted"] else ""),
+        + (f" · aborted episodes not counted: {t['aborted']}" if t["aborted"] else "")
+        + (f" · episodes ended by an infrastructure error, not counted: {t['errors']}" if t.get("errors") else ""),
         "",
         "Duration is robot time: the sum of the step attempts, without pauses and operator prompts.",
         "",
     ]
+    loop_error = (run.get("loop_stats") or {}).get("error")
+    if loop_error:
+        lines += [f"**Control loop error:** {loop_error}", ""]
     if summary["moves"]:
         sanity = run.get("kind") == "sanity"
         lines += [

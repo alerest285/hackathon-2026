@@ -34,6 +34,8 @@ def main(argv=None) -> int:
     p.add_argument("--save-limits", type=Path, help="write {joint: [lo, hi]} for the 5 joints")
     p.add_argument("--margin", type=float, default=0.0, help="degrees added on both sides of each saved range")
     a = p.parse_args(argv)
+    if a.margin < 0:
+        p.error("--margin must be >= 0 (a negative margin can leave lo >= hi)")
 
     from so101_client.robot_io import SO101
 

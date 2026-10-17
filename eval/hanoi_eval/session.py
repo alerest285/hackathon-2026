@@ -11,6 +11,7 @@ import sys
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from .hanoi import all_prompts
 from .keys import KeyListener
 from .recorder import git_info, make_run_dir, utc_now
 from .runner import HanoiRunner
@@ -62,6 +63,14 @@ def loop_config(cfg, dry_run: bool):
     if missing:
         logger.warning("LoopConfig has no field(s) %s; they are not applied", missing)
     return LoopConfig(**{k: v for k, v in values.items() if k in known})
+
+
+def unwarmed_prompts(hello: dict, cfg) -> list[str]:
+    """Prompts of this config the server did not warm up (hello `warm_tasks`); [] when it does not say."""
+    warm = hello.get("warm_tasks")
+    if warm is None:
+        return []
+    return [text for text in all_prompts(cfg) if text not in set(warm)]
 
 
 def build_rig(cfg, opts: SessionOptions):
@@ -118,6 +127,11 @@ def run_session(cfg, opts: SessionOptions, keys_source=None, log=print) -> tuple
         else:
             what = "LIVE arm: commands are written" if opts.live else "dry run: commands are logged, not written"
         log(f"connected: {what}; server {hello.get('engine')} {hello.get('checkpoint') or ''}".rstrip())
+        cold = unwarmed_prompts(hello, cfg)
+        if cold:
+            log(f"WARNING: the server did not warm up {len(cold)} of this config's prompts (first: {cold[0]!r}), so "
+                "the first plan of each encodes its caption. Restart it with the command from run_hanoi.py "
+                "--print-warmup")
         label = cfg.label + ("-sanity" if opts.sanity else ("-recover" if cfg.protocol == "recover" else "")) + (
             "-demo" if cfg.mode == "demo" else ""
         )

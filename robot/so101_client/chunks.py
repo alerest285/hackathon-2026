@@ -5,6 +5,10 @@ A chunk holds 42 absolute commands for ticks r..r+41: joints integrated from the
 (D0 = a0 - anchor, Di = ai - a(i-1)), joins it at index d = k - r and adds each delta to the command it
 last sent, which is what BFL's select_action does tick by tick. A position jump at a seam is therefore
 impossible; the K-tick crossfade smooths the change of velocity.
+
+After a hold that began at tick h, a reply starts at index max(0, h - r): actions 0..h-r-1 cover ticks the
+arm already moved through on the previous chunk, so replaying them would overshoot. That index is 0 when the
+request went out during the hold (start, task change, sync mode).
 """
 
 from __future__ import annotations
@@ -48,14 +52,17 @@ def crossfade_weights(k: int) -> np.ndarray:
 def clamp(cmd, last_cmd, joint_limits=None, step_max: float | None = 6.0) -> np.ndarray:
     """Joint limits first, then |cmd - last_cmd| <= step_max per joint, gripper into 0..100.
 
-    In this order a command never jumps by more than step_max, and it never leaves the limits once the
-    last command is inside them. joint_limits: 5 x (lo, hi) degrees, or None.
+    A joint inside its limits never leaves them. A joint outside them (the arm started there) may move
+    back toward them at the planned pace but not further out: its range is [min(lo, last), max(hi, last)],
+    so the limits never pull it in faster than the plan. A command never jumps by more than step_max.
+    joint_limits: 5 x (lo, hi) degrees with lo < hi, or None.
     """
     out = np.array(cmd, dtype=np.float64).reshape(JOINTS + 1)
     last = np.asarray(last_cmd, dtype=np.float64).reshape(JOINTS + 1)
     if joint_limits is not None:
         lim = np.asarray(joint_limits, dtype=np.float64).reshape(JOINTS, 2)
-        out[:JOINTS] = np.clip(out[:JOINTS], lim[:, 0], lim[:, 1])
+        lo, hi = np.minimum(lim[:, 0], last[:JOINTS]), np.maximum(lim[:, 1], last[:JOINTS])
+        out[:JOINTS] = np.clip(out[:JOINTS], lo, hi)
     if step_max is not None and step_max > 0:
         out[:JOINTS] = np.clip(out[:JOINTS], last[:JOINTS] - step_max, last[:JOINTS] + step_max)
     out[GRIPPER] = min(100.0, max(0.0, out[GRIPPER]))
@@ -65,9 +72,9 @@ def clamp(cmd, last_cmd, joint_limits=None, step_max: float | None = 6.0) -> np.
 class Stitcher:
     """The active chunk in joint-delta space.
 
-    accept() joins a reply at index d with a K-tick crossfade of the joint deltas, or at index 0 when
-    nothing is active (after a hold). A reply that would join a running chunk with d > chunk - 1 - K is
-    dropped. The gripper is taken from the newest chunk as it is.
+    accept() joins a reply at index d with a K-tick crossfade of the joint deltas, or at index `skip`
+    (default 0) when nothing is active (after a hold). A reply whose start index would be past
+    chunk - 1 - K is dropped. The gripper is taken from the newest chunk as it is.
     """
 
     def __init__(self, chunk: int = CHUNK, crossfade: int = 6):
@@ -97,19 +104,20 @@ class Stitcher:
         """Index of the next action of the active chunk."""
         return self._idx
 
-    def accept(self, actions, anchor, d: int, after_hold: bool | None = None) -> int | None:
+    def accept(self, actions, anchor, d: int, after_hold: bool | None = None, skip: int = 0) -> int | None:
         """Join a chunk planned for request tick r, d = k - r ticks later. Returns the start index, or
-        None when the chunk is dropped. after_hold defaults to "nothing is active"."""
+        None when the chunk is dropped. after_hold defaults to "nothing is active"; after a hold the chunk
+        starts at `skip`, without a crossfade."""
         jd, g = to_deltas(actions, anchor)
         if after_hold is None:
             after_hold = not self.active
-        if after_hold:
-            start, old = 0, None
-        else:
-            if d > len(g) - 1 - self.crossfade:
-                return None
-            start = max(0, int(d))
-            old = (self._jd, self._idx) if self.crossfade > 0 and self.active else None
+        start = int(skip) if after_hold else int(d)
+        if start > len(g) - 1 - self.crossfade:
+            return None
+        start = max(0, start)
+        old = None
+        if not after_hold and self.crossfade > 0 and self.active:
+            old = (self._jd, self._idx)
         self._jd, self._g, self._idx, self._old, self._fade_j = jd, g, start, old, 0
         return start
 
@@ -136,7 +144,10 @@ class Scheduler:
     """When to send the next request. One request is in flight at a time.
 
     prefetch: request when k - last_request >= P, or when the remaining actions <= d_max + K + 2, where
-    d_max is the worst turnaround in ticks over the last 100 plans; immediately while holding.
+    d_max is the worst turnaround in ticks over the last 100 replies. The Planner leaves out stale replies
+    and the first reply of each task, which can include encoding a new caption, so one slow first plan does
+    not set the cadence for the next 100; that first reply stands in only while there is no other sample.
+    Immediately while holding.
     sync (BFL's cadence): execute exec_horizon actions, hold, request from the current window; the ticks
     spent waiting for the reply do not enter the history, and the reply starts at index 0.
     """
@@ -152,13 +163,16 @@ class Scheduler:
         self.inflight: int | None = None
         self.last_request: int | None = None
         self._d: deque[int] = deque(maxlen=history)
+        self._d_first: int | None = None  # a task's first reply: d_max until _d has a sample
         self.executed = 0
         self.holding = True
         self._hold_requested = False
 
     @property
     def d_max(self) -> int:
-        return max(self._d) if self._d else 0
+        if self._d:
+            return max(self._d)
+        return self._d_first or 0
 
     def reset(self) -> None:
         """Task change or pause: back to a hold. A request in flight keeps its slot until its reply."""
@@ -209,10 +223,17 @@ class Scheduler:
         if self.holding:
             self._hold_requested = True
 
-    def received(self, rid: int, d: int | None = None) -> bool:
-        """A reply with actions arrived (any epoch). Records d and frees the slot if it was in flight."""
-        if d is not None:
+    def record(self, d: int, first: bool = False) -> None:
+        """One turnaround in ticks for d_max; first=True for a task's first reply, kept apart."""
+        if first:
+            self._d_first = int(d)
+        else:
             self._d.append(int(d))
+
+    def received(self, rid: int, d: int | None = None) -> bool:
+        """A reply with actions arrived (any epoch). Records d when given and frees the slot if it was in flight."""
+        if d is not None:
+            self.record(d)
         if rid != self.inflight:
             return False
         self.inflight = None
@@ -229,7 +250,8 @@ class Planner:
     """The per-tick chunk logic of the control loop: Stitcher + Scheduler, no I/O, no clock.
 
     Per tick the loop calls, in this order: appends() (does this observation enter the ring), received()
-    or failed() and offer() for each reply, step() for the command, then due() and sent().
+    or failed() and offer() for each reply, step() for the command, then due() and sent(). The loop passes
+    the tick k to reset(), offer() and step(), so the Planner knows when a hold began (hold_start).
     """
 
     def __init__(self, mode: str = "prefetch", period: int = 16, crossfade: int = 6, exec_horizon: int = EXEC,
@@ -238,6 +260,8 @@ class Planner:
             raise ValueError("exec_horizon cannot exceed chunk")
         self.stitcher = Stitcher(chunk, crossfade)
         self.scheduler = Scheduler(mode, period, crossfade, exec_horizon)
+        self.hold_start: int | None = None  # tick the current hold began; None: unknown, the next chunk starts at 0
+        self._first = True  # no chunk accepted since the last reset: the next reply is the task's first
 
     @property
     def mode(self) -> str:
@@ -251,30 +275,45 @@ class Planner:
     def remaining(self) -> int:
         return self.scheduler.remaining(self.stitcher.remaining)
 
-    def reset(self) -> None:
+    def reset(self, k: int | None = None) -> None:
+        """Task change or pause at tick k: drop the chunk and hold from k."""
         self.stitcher.reset()
         self.scheduler.reset()
+        self.hold_start = k
+        self._first = True
 
     def appends(self) -> bool:
         return self.scheduler.appends()
 
-    def offer(self, actions, anchor, d: int) -> int | None:
-        """A current reply: its start index (0 after a hold, else d), or None when it is dropped."""
+    def offer(self, actions, anchor, d: int, k: int | None = None) -> int | None:
+        """A current reply for request tick r = k - d: its start index, or None when it is dropped.
+
+        While a chunk runs it joins at d with the crossfade. After a hold that began at hold_start it starts
+        at max(0, hold_start - r): the actions before that index are for ticks the arm already moved through
+        on the previous chunk. A start past chunk - 1 - K drops the reply; the scheduler, still holding, then
+        requests again from the current window, which starts at 0. d enters d_max (see Scheduler).
+        """
         holding = self.scheduler.holding
+        skip = 0
         if holding:
             self.stitcher.reset()
-        start = self.stitcher.accept(actions, anchor, d, after_hold=holding)
+            if k is not None and self.hold_start is not None:
+                skip = max(0, self.hold_start - (k - d))
+        self.scheduler.record(d, first=self._first)
+        start = self.stitcher.accept(actions, anchor, d, after_hold=holding, skip=skip)
         if start is not None:
+            self._first = False
             self.scheduler.started()
         return start
 
-    def step(self, last_cmd) -> np.ndarray | None:
+    def step(self, last_cmd, k: int | None = None) -> np.ndarray | None:
         """The next command before clamping (last command + joint delta, gripper absolute), or None to hold."""
         if self.scheduler.holding:
             return None
         nxt = self.stitcher.next()
         if nxt is None:
             self.scheduler.hold()
+            self.hold_start = k
             return None
         delta, gripper = nxt
         cmd = np.array(last_cmd, dtype=np.float64).reshape(JOINTS + 1)
@@ -290,8 +329,10 @@ class Planner:
     def sent(self, k: int, rid: int) -> None:
         self.scheduler.sent(k, rid)
 
-    def received(self, rid: int, d: int | None = None) -> bool:
-        return self.scheduler.received(rid, d)
+    def received(self, rid: int) -> bool:
+        """A reply with actions arrived: frees the slot if it was in flight. Its d enters d_max through
+        offer(), which stale replies never reach."""
+        return self.scheduler.received(rid)
 
     def failed(self, rid: int) -> None:
         self.scheduler.failed(rid)

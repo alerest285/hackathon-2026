@@ -22,6 +22,7 @@ class AutoEndConfig:
     closed_is: str = "low"           # which end of the 0..100 gripper range is closed
     closed_threshold: float = 15.0   # at or past this the gripper counts as closed
     open_threshold: float = 25.0     # at or past this it counts as open again
+    empty_threshold: float | None = None  # at or past this it closed on nothing: a miss (None: no miss check)
     min_hold_s: float = 0.5
     rest_s: float = 1.0
     rest_speed_deg_s: float = 10.0
@@ -193,6 +194,8 @@ def from_dict(raw: dict) -> HanoiConfig:
         raise ConfigError("config problems:\n  - " + "\n  - ".join(problems))
     if cfg.loop.joint_limits is not None:
         cfg.loop.joint_limits = [[float(lo), float(hi)] for lo, hi in cfg.loop.joint_limits]
+    if cfg.auto_end.empty_threshold is not None:
+        cfg.auto_end.empty_threshold = float(cfg.auto_end.empty_threshold)
     return cfg
 
 
@@ -248,6 +251,14 @@ def check(cfg: HanoiConfig) -> list[str]:
     for name in ("closed_threshold", "open_threshold"):
         if not 0.0 <= getattr(a, name) <= 100.0:
             problems.append(f"auto_end.{name} must be within the gripper range 0..100")
+    if a.empty_threshold is not None:
+        e = a.empty_threshold
+        if not _is_number(e) or not 0.0 <= e <= 100.0:
+            problems.append("auto_end.empty_threshold must be a number within the gripper range 0..100")
+        elif a.closed_is == "low" and not e < a.closed_threshold:
+            problems.append("auto_end: with closed_is = low, empty_threshold must be below closed_threshold")
+        elif a.closed_is == "high" and not e > a.closed_threshold:
+            problems.append("auto_end: with closed_is = high, empty_threshold must be above closed_threshold")
     for name in ("min_hold_s", "rest_s", "rest_speed_deg_s"):
         if getattr(a, name) <= 0:
             problems.append(f"auto_end.{name} must be > 0")

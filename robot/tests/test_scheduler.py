@@ -36,6 +36,31 @@ def test_d_max_is_the_worst_of_the_last_100_plans():
     assert s.d_max == 11
 
 
+def test_one_slow_first_reply_does_not_set_the_cadence():
+    # The first plan of a caption that was not warmed up takes 90 ticks, then every reply takes 10. The slow
+    # one stands in for d_max only until the second reply, so prefetch keeps its P = 16 cadence.
+    planner = Planner("prefetch")
+    planner.reset(0)
+    ids, due, inflight, requests, last = itertools.count(1), {}, None, [], np.zeros(6)
+    for k in range(700):
+        if inflight is not None and due[inflight][1] == k:
+            r = due[inflight][0]
+            planner.received(inflight)
+            planner.offer(np.tile(last, (42, 1)).astype(np.float32), last, k - r, k)
+            inflight = None
+        cmd = planner.step(last, k)
+        last = last if cmd is None else cmd
+        if planner.due(k):
+            inflight = next(ids)
+            planner.sent(k, inflight)
+            due[inflight] = (k, k + (90 if inflight == 1 else 10))
+            requests.append(k)
+    assert planner.scheduler.d_max == 10
+    assert len(requests) <= 45  # 62 when the slow reply stayed in d_max for 100 plans
+    gaps = np.diff(requests[3:])
+    assert (gaps == 16).mean() > 0.9
+
+
 def test_sync_requests_only_while_holding():
     s = Scheduler("sync", exec_horizon=32)
     assert s.due(0, 0) and s.appends()
@@ -52,9 +77,25 @@ def test_sync_requests_only_while_holding():
     assert s.due(37, 0) and s.appends()
 
 
-def simulate(mode, latency, n_ticks, velocity=0.25, period=16):
+def goal_plan(goal, speed):
+    """A model that drives joint 0 to `goal` at `speed` deg/tick from the anchor, then stops. Executed in
+    time order, its chunks never pass the goal; replaying ticks the arm already moved through would."""
+
+    def plan(anchor):
+        out = np.tile(np.asarray(anchor, np.float32), (42, 1))
+        x = float(anchor[0])
+        for i in range(42):
+            x += float(np.clip(goal - x, -speed, speed))
+            out[i, 0] = x
+        return out
+
+    return plan
+
+
+def simulate(mode, latency, n_ticks, velocity=0.25, period=16, plan=None):
     """Drive a Planner the way ControlLoop does, with a server that answers after `latency` ticks."""
     planner = Planner(mode, period=period)
+    planner.reset(0)  # set_task at tick 0
     ids = itertools.count(1)
     inflight = {}  # rid -> (request tick, anchor, due tick)
     last = np.zeros(6)
@@ -65,12 +106,15 @@ def simulate(mode, latency, n_ticks, velocity=0.25, period=16):
         accepted = None
         for rid in [r for r, v in inflight.items() if v[2] == k]:
             r, anchor, _ = inflight.pop(rid)
-            planner.received(rid, k - r)
-            actions = np.zeros((42, 6), np.float32)
-            actions[:, :5] = anchor[:5] + velocity * (np.arange(42)[:, None] + 1)
-            start = planner.offer(actions, anchor, k - r)
+            planner.received(rid)
+            if plan is None:
+                actions = np.zeros((42, 6), np.float32)
+                actions[:, :5] = anchor[:5] + velocity * (np.arange(42)[:, None] + 1)
+            else:
+                actions = plan(anchor)
+            start = planner.offer(actions, anchor, k - r, k)
             accepted = {"id": rid, "tick": r, "d": k - r, "start": start}
-        cmd = planner.step(last)
+        cmd = planner.step(last, k)
         if cmd is not None:
             last = cmd
         requested = None
@@ -119,6 +163,19 @@ def test_prefetch_drops_a_reply_that_is_too_late_and_holds():
     # first chunk after the hold starts at 0; the next arrives with d = 40 > 35 while it runs: dropped
     assert accepted[0]["start"] == 0
     assert any(a["start"] is None for a in accepted)
+
+
+def test_prefetch_after_a_starvation_hold_does_not_replay_motion():
+    # 26 and 30 ticks of turnaround starve one request in flight. A reply planned before the hold began skips
+    # the ticks the arm moved through meanwhile, so a goal-reaching model stops at its goal (with start 0 it
+    # overshot to 35.5 and 36 deg).
+    for latency in (26, 30):
+        log = simulate("prefetch", latency=latency, n_ticks=400, plan=goal_plan(30.0, 0.5))
+        assert any(e["held"] for e in log[latency:]), "the case must starve"
+        joint = np.array([e["cmd"][0] for e in log])
+        assert joint.max() <= 30.0 + 1e-6 and joint[-1] == 30.0
+        starts = [e["accepted"]["start"] for e in log if e["accepted"]]
+        assert starts[0] == 0 and any(s and s > 0 for s in starts[1:])
 
 
 def test_sync_cadence_execute_32_hold_request_start_at_zero():

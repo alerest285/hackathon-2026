@@ -14,7 +14,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .base import Engine, pin_revision, snapshot_indices, window_order
+from .base import Engine, override_sampling, pin_revision, snapshot_indices, window_order
 
 
 def _git_commit(path: Path) -> str | None:
@@ -43,6 +43,9 @@ class LeRobotEngine(Engine):
         compile: bool = False,
         adapter: str | None = None,
         offload_text_encoder: bool = True,
+        force_base_revision: bool = False,
+        guidance: tuple[float, float] | None = None,
+        steps: int | None = None,
     ):
         super().__init__()
         import lerobot
@@ -67,15 +70,28 @@ class LeRobotEngine(Engine):
             from peft import PeftConfig
 
             peft_config = PeftConfig.from_pretrained(adapter)
-            if peft_config.base_model_name_or_path and peft_config.base_model_name_or_path != checkpoint:
-                base, base_rev = peft_config.base_model_name_or_path, peft_config.revision
+            named, pinned = peft_config.base_model_name_or_path, peft_config.revision
+            if named and named != checkpoint:
+                # A commit of --checkpoint means nothing for another repo: the adapter's own pin, as make_policy.
+                base, base_rev = named, pinned
+                if not pinned and not Path(named).is_dir():
+                    print(f"lerobot: WARNING: adapter base {named} has no pinned revision; loading its main", flush=True)
+            elif pinned and pinned != revision:
+                if revision:
+                    print(f"lerobot: WARNING: the adapter pins {checkpoint}@{pinned}; using it, not --revision "
+                          f"{revision[:8]}", flush=True)
+                base_rev = pinned
+            if base_rev and Path(base).is_dir():
+                base_rev = None
             settings, settings_rev = adapter, None
             print(f"lerobot: adapter {adapter} on base {base}{f'@{base_rev}' if base_rev else ''}", flush=True)
         cfg = Flux3Config.from_pretrained(settings, revision=settings_rev)
         cfg.device = device
         cfg.compile_model = bool(compile)  # read by the constructor (encoders) and by _inference_dit
-        cfg.video_vae_id, vae_note = pin_revision(cfg.video_vae_id, base_revision)
-        cfg.text_encoder_id, te_note = pin_revision(cfg.text_encoder_id, base_revision)
+        config_vae, config_te = cfg.video_vae_id, cfg.text_encoder_id
+        print(f"lerobot: checkpoint config encoders {config_vae} and {config_te}", flush=True)
+        cfg.video_vae_id, vae_note = pin_revision(cfg.video_vae_id, base_revision, force_base_revision)
+        cfg.text_encoder_id, te_note = pin_revision(cfg.text_encoder_id, base_revision, force_base_revision)
         for note in (vae_note, te_note):
             if note:
                 print(f"lerobot: {note}", flush=True)
@@ -98,6 +114,8 @@ class LeRobotEngine(Engine):
             preprocessor_overrides={"device_processor": {"device": device}},
         )
         cfg = inner.config
+        for note in override_sampling(cfg, guidance, steps):
+            print(f"lerobot: {note}", flush=True)
         self.camera_keys = list(cfg.camera_order)
         self.cameras = [key.removeprefix("observation.images.") for key in self.camera_keys]
         self.snapshots = snapshot_indices(cfg.n_obs_steps, cfg.history_snapshots)
@@ -124,6 +142,8 @@ class LeRobotEngine(Engine):
             "checkpoint": str(checkpoint),
             "revision": revision,
             "adapter": adapter,
+            "base": str(base),
+            "base_revision": base_rev,
             "chunk": cfg.chunk_size,
             "exec": cfg.n_action_steps,
             "fps": _num(cfg.fps),
@@ -138,6 +158,8 @@ class LeRobotEngine(Engine):
             "dtype": str(cfg.dtype).removeprefix("torch."),
             "video_vae_id": cfg.video_vae_id,
             "text_encoder_id": cfg.text_encoder_id,
+            "config_video_vae_id": config_vae,
+            "config_text_encoder_id": config_te,
             "compile": "dit+encoders" if compile else False,
             "offload_text_encoder": bool(offload_text_encoder),
             "device": str(device),
