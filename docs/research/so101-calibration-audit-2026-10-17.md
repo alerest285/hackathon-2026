@@ -273,3 +273,40 @@ drained. The rig also accepts mapping metadata for a different robot ID, and leg
 nonidentity gripper maps can make native-unit action logs report 150 although clipping
 sent 100. The T21 identity gripper avoids that conditional defect. These findings were
 sent to Hanoi's owner; evidence is in `/private/tmp/so101_eval_integration_review.py`.
+
+### Recheck of console commit `9da7740`
+
+Verified with actual LeRobot 0.6.1 and offline console handlers:
+
+- Create/resume still produces native LeRobot episodes and zero PNGs.
+- Forced encoder loss is now exposed in status and sidecars; the 12-row/6-scene-frame
+  case has `encoder_dropped.scene = 6` and `valid = false`.
+- Dry episodes carry `run_mode = dry` and `valid = false`.
+- A disk-full save failure returns an error from `close()` and the writer exits.
+  The app no longer prints successful finalization in that case.
+- Save/discard insertion is nonblocking even with a full frame queue.
+- Latched loop faults appear in `/status`; `/task` and `/connect` return 409 without
+  queueing commands. An attached recorder receives one fault-save request.
+- Cleanup is report-only by default. A scratch dataset with saved episode 0 and
+  unsaved episode 1 lists the latter as KEEP and changes neither. Saad confirmed in
+  chat that his own unsaved PNGs were preserved and also encoded to verified videos;
+  he did not run the automatic-deletion version.
+
+Three regressions remain and were sent to the owner:
+
+1. Separate control/frame queues lack an episode boundary. With the writer paused,
+   enqueue frame 0, Save(success), then frame 1 for a new episode with the same task.
+   On resuming, both frames enter one success episode with `valid = true`. Discard
+   at the same boundary deletes both episodes' queued frames. Preserve enqueue order
+   or fence each control operation by a frame sequence number.
+2. `_drain()` bypasses disk checks. With free space mocked to 1 MB, 350 queued frames
+   followed by Save/Close all write while `low_disk` stays false.
+3. `start.sh` creates a custom `--record-root` before `LeRobotDataset.create()`, which
+   requires a new dataset root not to exist. Check the nearest existing ancestor's
+   filesystem without creating the dataset directory.
+
+Evidence: `/private/tmp/recording_boundary_probe.py`,
+`/private/tmp/recording_checker_probe_v2.py`, and
+`/private/tmp/recording_checker_probe_v2.log`. These supersede the earlier recorder
+drop-visibility, blocking-save and shutdown findings; physical calibration is still
+experimental, independently of those software fixes.
