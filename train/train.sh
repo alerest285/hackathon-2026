@@ -7,8 +7,8 @@
 #   bash train/train.sh smoke  <name> [--batch B]       save -> resume -> load raw + EMA adapters in the server; required
 #                                                        once per setup before a full run
 #   bash train/train.sh run    <name> [--batch B] [--updates 2500] [--effective 8] [--tag v1]   full run in tmux
-#   bash train/train.sh resume <run>                    restage the dataset from /workspace (manifest hash checked)
-#                                                        and continue <run> from its last checkpoint, in tmux
+#   bash train/train.sh resume <run> [--workers N] [--wandb E/P]   restage the dataset from /workspace (manifest hash
+#                                                        checked) and continue <run> from its last checkpoint, in tmux
 #
 # The optimizer always sees an effective batch of --effective (default 8, BFL's single-GPU preset): accumulation is
 # effective / batch, and steps, save and eval scale with it, so --batch only changes speed, not the recipe.
@@ -98,7 +98,15 @@ if [ "$mode" = resume ]; then
   echo "restaged $dname at $staged (manifest $want verified)"
   log="/workspace/train-logs/$name.resume-$(date -u +%m%d-%H%M).log"
   cmd="${log%.log}.cmd"
-  echo "cd \"$LEROBOT_DIR\" && $ENV_PREFIX $PY -m lerobot.scripts.lerobot_train --config_path=$cfg --resume=true" > "$cmd"
+  extra=""   # explicit flags override the saved train_config.json
+  [ -n "$workers" ] && extra+=" --num_workers=$(loader_workers "$workers")"
+  if [ -n "$wandb" ]; then
+    [ -n "${WANDB_API_KEY:-}" ] || grep -qs api.wandb.ai ~/.netrc || { echo "--wandb needs WANDB_API_KEY in the env (or wandb login)" >&2; exit 2; }
+    extra+=" --wandb.enable=true --wandb.entity=${wandb%%/*} --wandb.project=${wandb#*/} --wandb.disable_artifact=true"
+  fi
+  [ -n "$workers" ] && warm_venv
+  echo "cd \"$LEROBOT_DIR\" && $ENV_PREFIX $PY -m lerobot.scripts.lerobot_train --config_path=$cfg --resume=true$extra" > "$cmd"
+  echo "resume overrides:${extra:- none (saved config)}"
   in_tmux "lora-$name" "$cmd" "$log"
   exit 0
 fi
