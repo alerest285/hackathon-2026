@@ -49,3 +49,4 @@ Append-only, newest at the bottom. One line per event.
 - 2026-10-17T15:35Z alerest285 [T10] (claude-code-hanoi) pin_revision passes path-shaped encoder specs through (lerobot-train adapters record absolute snapshot paths, T23); server tests 21 pass
 - 2026-10-17T15:39Z alerest285 [T10] (claude-code-hanoi) decision 06 gets its measured numbers (eager p50 514/p95 549 ms 15.8 GiB; --compile 351/398 ms deployed; guidance 1/1 not deployed; turnaround 560-590 ms short link, 745 ms Saad eager); Hub main 0713a7af == pin c9e13b2a for every model file (HF tree diff)
 - 2026-10-17T15:42Z alerest285 [T10] (claude-code-hanoi) serve.sh falls back to /workspace/{flux-action,lerobot-flux3} when the home env is missing (train/setup.sh builds /workspace/lerobot-flux3); LoRA cross-check filed as docs/research/2026-10-17-lora-plan-crosscheck.md
+- 2026-10-17T19:41Z alerest285 [T26] (claude-code) release (done): resume + timing flags
