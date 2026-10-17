@@ -1,7 +1,7 @@
 ---
 id: T25
 title: Record of Saad's first live zero-shot run (docs/runs)
-status: todo
+status: done
 owner: 
 depends: 
 paths:
@@ -10,7 +10,7 @@ paths:
 
 ## Goal
 
-TODO: one or two sentences.
+Record Saad's first live zero-shot run for alerest285's failure log (T24).
 
 ## Done when
 
@@ -22,3 +22,5 @@ TODO: one or two sentences.
 
 ## Notes and handoffs (append, newest last)
 
+- 2026-10-17T15:36Z · saadl27 · done without a lock: docs/runs/** is held by T24, so the record lives in the free path
+  docs/research/2026-10-17-saad-live-run-1.md (+ .plans.jsonl). Move it under docs/runs/ in T24 if wanted.
