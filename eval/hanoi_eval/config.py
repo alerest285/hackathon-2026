@@ -47,6 +47,18 @@ class LoopSettings:
 class RobotSettings:
     port: str = ""
     id: str = "so101_follower"
+    # console/mapping.py joint map (T20/T21) from the arm's degrees into the checkpoint's convention; "" = none
+    mapping: str = "~/hackathon-data/joint_mapping.json"
+
+
+@dataclass
+class RecordSettings:
+    """Live attempts as LeRobotDataset episodes (hanoi_eval/dataset.py)."""
+
+    lerobot: bool = True
+    repo_id: str = "alerest285/so100_hanoi_eval"
+    root: str = "~/hackathon-data/so100_hanoi_eval"
+    robot_type: str = "so100_follower"
 
 
 @dataclass
@@ -102,6 +114,7 @@ class HanoiConfig:
     server: ServerSettings = field(default_factory=ServerSettings)
     video: VideoSettings = field(default_factory=VideoSettings)
     sanity: SanitySettings = field(default_factory=SanitySettings)
+    record: RecordSettings = field(default_factory=RecordSettings)
 
     @property
     def n(self) -> int:
@@ -127,6 +140,7 @@ SECTIONS = {
     "server": ServerSettings,
     "video": VideoSettings,
     "sanity": SanitySettings,
+    "record": RecordSettings,
 }
 
 CHOICES = {
@@ -294,6 +308,9 @@ def check(cfg: HanoiConfig) -> list[str]:
         problems.append("sanity.repeats must be >= 1")
     if not cfg.server.url.startswith(("ws://", "wss://")):
         problems.append("server.url must start with ws:// or wss://")
+    r = cfg.record
+    if r.lerobot and (r.repo_id.count("/") != 1 or not all(r.repo_id.split("/")) or not r.root.strip()):
+        problems.append("record.repo_id must be <user>/<name> and record.root a directory when record.lerobot is on")
     return problems
 
 

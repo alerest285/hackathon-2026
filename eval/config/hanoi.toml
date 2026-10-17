@@ -46,6 +46,9 @@ spin_margin_ms = 6.0
 [robot]
 port = ""                      # e.g. /dev/tty.usbmodem58760431541; required for a real arm (--port)
 id = "so101_follower"          # LeRobot calibration id (--robot-id)
+# Joint map from the arm's own degrees into the checkpoint's convention (console/fit_reference.py writes it, T21).
+# A live run refuses to start without it; "" sends raw LeRobot degrees, which the checkpoint never saw.
+mapping = "~/hackathon-data/joint_mapping.json"
 
 [cameras]
 scene = 0                      # OpenCV index or device path (--scene)
@@ -68,3 +71,9 @@ fps = 30.0
 [sanity]                       # --sanity N runs every move N times
 moves = "all"                  # all: every piece x every ordered pair of places (18) | solution: the 7 moves of the solution
 repeats = 2
+
+[record]                       # live attempts as LeRobotDataset episodes, one per attempt, task = the prompt
+lerobot = true                 # --record also records dry and fake runs (their actions never moved an arm)
+repo_id = "alerest285/so100_hanoi_eval"
+root = "~/hackathon-data/so100_hanoi_eval"   # stays local; verdicts in <root>/hanoi_episodes.jsonl
+robot_type = "so100_follower"

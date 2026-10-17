@@ -23,11 +23,11 @@ uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml -
 
 # sanity runs on the arm, dry run first (commands logged, not written), then live
 uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --sanity 2 --port /dev/tty.usbmodem... --robot-id so101_hanoi
-uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --sanity 2 --live --port ... --robot-id ...
+uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --sanity 2 --live --limits ~/hackathon-data/limits.json --port ... --robot-id ...
 
 # the 10 strict episodes, then optional recover runs
-uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --live --port ... --robot-id ...
-uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --live --protocol recover --port ... --robot-id ...
+uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --live --limits ~/hackathon-data/limits.json --port ... --robot-id ...
+uv run --project eval python eval/run_hanoi.py --config eval/config/hanoi.toml --live --limits ~/hackathon-data/limits.json --protocol recover --port ... --robot-id ...
 ```
 
 The server is reached through `ssh -L 8000` (`infra/aws/ssh.sh`); `--server` overrides `server.url`. On connect
@@ -35,7 +35,34 @@ the runner compares the server's warmed captions (hello `warm_tasks`) with the c
 WARNING naming the ones the first plan would have to encode; `--print-warmup` gives the server command that
 warms them all (9 with the default config).
 Without `--live` nothing reaches the motors. With `--fake` or `--fake-hardware` the commands go to the fake arm,
-which follows them. `--limits limits.json` takes the joint limits written by `robot/readout.py --save-limits`.
+which follows them. `--limits limits.json` takes the joint limits in the arm's own degrees, written by
+`robot/readout.py --save-limits` or `console/fit_reference.py`.
+
+### The real arm: joint map, limits, guard (same stack as robot/run.py and console/)
+
+- **Joint map.** The checkpoint was trained in the old SO-100 calibration, not LeRobot 0.6.1's
+  (docs/research/so101-calibration-audit-2026-10-17.md). `robot.mapping` (default
+  `~/hackathon-data/joint_mapping.json`, written by `console/fit_reference.py`, T21) wraps the arm in
+  `console/mapping.py`'s `MappedRobot`: the loop, the history and the server work in the checkpoint's
+  convention. `--live` refuses to start without the file; a dry run warns and sends raw degrees.
+  `robot.mapping = ""` opts out explicitly.
+- **Limits.** `--live` refuses to start without them (`--limits` or `loop.joint_limits`, the arm's degrees).
+  They feed the native guard as they are and the loop's clamp mapped into the checkpoint's convention.
+- **Native guard.** `SO101.write` stops the loop on a goal more than 25° from the measured joint, a jump of
+  more than 15° between writes, or a goal outside the limits (robot/README.md, Safety).
+- **Units.** `ticks.jsonl` state and cmd, the step-end thresholds and the dataset are in the arm's own degrees
+  (the runner maps them back); `chunks.npz` holds the actions as the server sent them. `run.json` keeps the map.
+
+### LeRobot dataset of attempts
+
+Live runs also record every step attempt as one LeRobotDataset episode, task = its prompt, through
+`console/recorder.py` (the features of `lerobot-record`'s so100_follower: `observation.state`, `action` in the
+arm's degrees, scene and wrist video 480x640), to `record.root` (default `~/hackathon-data/so100_hanoi_eval`,
+local only). LeRobot's metadata stays untouched; `<root>/hanoi_episodes.jsonl` has one line per saved episode:
+`episode_index`, `task`, `frames`, `verdict` (success, fail, error, quit), the run, episode, step, try, attempt,
+end reason, pauses and interventions. Frames stop during a pause (a person may be in the scene), so filter on
+`interventions == 0` and `verdict == "success"` for training. `--no-record` turns it off; `--record` also records
+dry and fake runs, whose actions never moved an arm.
 `--unattended` (alias `--auto-confirm`) is test-only and needs `--fake` or `--fake-hardware`: it presses enter at
 every prompt and answers a verdict with success after an auto end and fail after a timeout, for runs without a
 terminal. Fake runs keep the configured label unless `--label` is given, so name them apart from real runs.
@@ -114,7 +141,8 @@ there is no miss check (the model commands the same close for a piece as for air
 | `between_steps` | `keep_history` (decision 06) or `reset_history` |
 | `[auto_end]` | `enabled`, `signal` (`state`/`cmd`), `closed_is` (`low`/`high`), `closed_threshold`, `open_threshold`, `empty_threshold` (optional; absent = no miss check), `min_hold_s`, `rest_s`, `rest_speed_deg_s` |
 | `[loop]` | `LoopConfig`: `mode` (`prefetch`/`sync`), `fps`, `period`, `crossfade`, `exec_horizon`, `chunk`, `step_max_deg`, `spin_margin_ms`, `joint_limits` |
-| `[robot]`, `[cameras]`, `[server]` | port and calibration id; camera sources, sizes, image format; server URL |
+| `[robot]`, `[cameras]`, `[server]` | port, calibration id and `mapping` (the joint map, `""` for none); camera sources, sizes, image format; server URL |
+| `[record]` | `lerobot` (live runs record), `repo_id`, `root`, `robot_type` |
 | `[video]` | `enabled`, `codec` (`mp4v`), `fps` |
 | `[sanity]` | `moves` (`all`/`solution`), `repeats` |
 
@@ -124,7 +152,8 @@ Unknown keys and bad values are refused on load, all problems at once.
 
 ```
 eval/runs/<UTC stamp>-<label>[-sanity|-recover][-demo]/     (gitignored)
-  run.json        config, CLI, git commit and dirty flag, server hello, LoopConfig, loop stats at the end
+  run.json        config, CLI, git commit and dirty flag, server hello, LoopConfig, joint map, native limits
+                  and guard, the units note, the LeRobot dataset, loop stats at the end
   summary.md      the results table (below); summary.json the same as data
   epNN/
     episode.json    steps completed in a row, steps attempted, attempts, success, interventions, end,

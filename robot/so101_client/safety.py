@@ -12,13 +12,29 @@ The gripper (index 5) is left out: a grasp holds a steady error by design, and t
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 
 from . import STATE_NAMES
 
 JOINTS = 5
+
+
+def load_limits(path) -> tuple | None:
+    """5 x (lo, hi) native degrees from a JSON {joint: [lo, hi]} file (readout.py --save-limits, fit_reference.py).
+    None for no path. Raises ValueError unless lo < hi for every joint."""
+    if path is None:
+        return None
+    path = Path(path).expanduser()
+    data = json.loads(path.read_text())
+    limits = tuple((float(data[name][0]), float(data[name][1])) for name in STATE_NAMES[:JOINTS])
+    bad = [name for name, (lo, hi) in zip(STATE_NAMES, limits) if not lo < hi]
+    if bad:
+        raise ValueError(f"{path}: each joint needs lo < hi, not for {', '.join(bad)}")
+    return limits
 
 
 class SafetyStop(RuntimeError):

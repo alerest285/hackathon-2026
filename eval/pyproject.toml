@@ -10,6 +10,8 @@ dependencies = [
     # so101-client pulls LeRobot 0.6.1, which requires the headless OpenCV build. opencv-python next to it
     # would install a second wheel with the same cv2 module. Headless keeps VideoWriter (FFmpeg) for the mp4s.
     "opencv-python-headless",
+    # LeRobotDataset writer for live attempts (hanoi_eval/dataset.py), the same pin console/start.sh adds with --with.
+    "lerobot[dataset]==0.6.1",
 ]
 
 [dependency-groups]

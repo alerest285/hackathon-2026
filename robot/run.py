@@ -19,7 +19,6 @@ import sys
 import time
 from pathlib import Path
 
-from so101_client import STATE_NAMES
 from so101_client.loop import ControlLoop, LoopConfig
 
 HERE = Path(__file__).resolve().parent
@@ -62,15 +61,11 @@ def parse_args(argv=None):
 
 
 def load_limits(path: Path | None):
-    """{joint: [lo, hi]} for the 5 joints (readout.py --save-limits). Raises ValueError unless lo < hi."""
-    if path is None:
-        return None
-    data = json.loads(path.read_text())
-    limits = tuple((float(data[name][0]), float(data[name][1])) for name in STATE_NAMES[:5])
-    bad = [name for name, (lo, hi) in zip(STATE_NAMES, limits) if not lo < hi]
-    if bad:
-        raise ValueError(f"{path}: each joint needs lo < hi, not for {', '.join(bad)}")
-    return limits
+    """{joint: [lo, hi]} for the 5 joints (readout.py --save-limits). Raises ValueError unless lo < hi.
+    Kept here for console/app.py; the loader lives in so101_client.safety."""
+    from so101_client.safety import load_limits as load
+
+    return load(path)
 
 
 def build(a):

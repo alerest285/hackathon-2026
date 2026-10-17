@@ -15,12 +15,14 @@ stops with the reason.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from .dataset import verdict_word
 from .hanoi import Move, TowerState, other_place, piece_name, prompt, sanity_moves, solve
 from .keys import describe
 from .recorder import EpisodeRecorder, utc_now, write_json
@@ -71,8 +73,16 @@ class HanoiRunner:
         log=print,
         clock=time.perf_counter,
         poll_s: float = 0.02,
+        to_native=None,
+        dataset=None,
     ):
+        """to_native: maps the loop's state/cmd (the checkpoint's convention when the arm is mapped) back to the
+        arm's own degrees for the step-end detector, ticks.jsonl and the dataset; None when they are the same.
+        dataset: a HanoiDataset that records each attempt as one LeRobot episode, or None."""
         self.loop = loop
+        self.to_native = to_native
+        self.dataset = dataset
+        self._frames: dict = {}  # newest full-resolution BGR frame per camera, for the dataset
         self.keys = keys
         self.cfg = cfg
         self.run_dir = Path(run_dir)
@@ -94,11 +104,20 @@ class HanoiRunner:
         loop.add_observer(self._on_tick)
         if self.video is not None:
             loop.add_frame_tap(self.video)
+        if self.dataset is not None:
+            loop.add_frame_tap(self._on_frame)
 
     # control thread ---------------------------------------------------------------------------------------
 
+    def _on_frame(self, cam, bgr, t) -> None:
+        self._frames[cam] = bgr
+
     def _on_tick(self, info) -> None:
         try:
+            if self.to_native is not None:
+                info = dataclasses.replace(info, state=self.to_native(info.state), cmd=self.to_native(info.cmd))
+            if self.dataset is not None:
+                self.dataset.add(info.state, info.cmd, self._frames.get("scene"), self._frames.get("wrist"), info.task)
             recorder = self._recorder
             if recorder is not None:
                 recorder.on_tick(info)
@@ -405,6 +424,8 @@ class HanoiRunner:
             problem = self._loop_problem()
             if problem is None:
                 self.loop.set_task(text, reset_history=reset_history)
+                if self.dataset is not None:
+                    self.dataset.begin(text)
             while problem is None:
                 event = self.keys.poll()
                 now = self.clock()
@@ -421,6 +442,8 @@ class HanoiRunner:
                 if event == "pause":
                     if pause_t is None:
                         self._attach(None)
+                        if self.dataset is not None:
+                            self.dataset.pause()  # a person may be in the scene: no frames until resume
                         self.loop.pause()
                         pause_t, pauses = now, pauses + 1
                         self.log(f"    paused: space resumes, {end_keys} end the step")
@@ -432,6 +455,8 @@ class HanoiRunner:
                         self._attach(detector)
                         # A pause is an intervention: the full reset (docs/architecture.md, decision 06).
                         self.loop.set_task(text, reset_history=True)
+                        if self.dataset is not None:
+                            self.dataset.begin(text)
                         self.log("    resumed, history reset")
                 elif event in ("success", "fail", "retry"):
                     end_reason, key_verdict, retry_requested = "key", event == "success", event == "retry"
@@ -489,7 +514,7 @@ class HanoiRunner:
             except KeyboardInterrupt:
                 quit_now = interrupted = True
         restored = tries > 0
-        return {
+        result = {
             "episode": plan.index,
             "episode_name": plan.name,
             "kind": plan.kind,
@@ -526,6 +551,14 @@ class HanoiRunner:
             "state_before": state.to_dict(),
             "state_after": state.apply(move).to_dict() if success else None,
         }
+        if self.dataset is not None:
+            meta = {key: result[key] for key in ("episode", "step", "try", "attempt", "kind", "end_reason", "pauses",
+                                                 "interventions", "verdict_by", "move")}
+            meta.update(run=self.run_dir.name, mode=cfg.mode, protocol=protocol, live=self.run_info.get("live"),
+                        dry_run=self.run_info.get("dry_run"), fake=bool(self.run_info.get("fake")
+                                                                       or self.run_info.get("fake_hardware")))
+            self.dataset.end(verdict_word(result), meta)
+        return result
 
 
 def end_word(ep: dict) -> str:

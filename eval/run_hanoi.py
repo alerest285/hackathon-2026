@@ -68,6 +68,11 @@ def parse(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--loop-mode", choices=["prefetch", "sync"], help="client loop mode (config: loop.mode)")
     p.add_argument("--limits", type=Path, help="joint limits JSON from robot/readout.py --save-limits (config: loop.joint_limits)")
     p.add_argument("--no-video", action="store_true", help="skip scene.mp4 / wrist.mp4")
+    rec = p.add_mutually_exclusive_group()
+    rec.add_argument("--record", dest="record", action="store_const", const=True,
+                     help="record a LeRobotDataset episode per attempt even in a dry or fake run (default: live only)")
+    rec.add_argument("--no-record", dest="record", action="store_const", const=False,
+                     help="no LeRobotDataset, even live (config: record.lerobot)")
     p.add_argument("--out", default=str(EVAL_DIR / "runs"), help="parent directory of the run directories")
     p.add_argument("--unattended", "--auto-confirm", dest="unattended", action="store_true",
                    help="test-only, with --fake or --fake-hardware: enter at every prompt, verdict success after an "
@@ -135,6 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         live=a.live,
         episodes=a.episodes,
         sanity=a.sanity,
+        record=a.record,
         out=Path(a.out),
         argv=["run_hanoi.py", *raw_argv],
     )
