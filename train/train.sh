@@ -21,11 +21,12 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 mode="${1:-}"; name="${2:-}"; shift 2 || true
-batch=2 updates=2500 effective=8 tag="" share=0 workers="" wandb=""
+batch=2 updates=2500 effective=8 tag="" share=0 workers="" wandb="" policy_dir=""
 while [ $# -gt 0 ]; do case "$1" in
   --batch) batch="$2"; shift 2 ;; --updates) updates="$2"; shift 2 ;; --effective) effective="$2"; shift 2 ;;
   --tag) tag="$2"; shift 2 ;; --share) share=1; shift ;;
   --workers) workers="$2"; shift 2 ;; --wandb) wandb="$2"; shift 2 ;;
+  --policy) policy_dir="$2"; shift 2 ;;  # base checkpoint dir (e.g. /workspace/ckpt/flux-3-action-so101-hfsim-norm)
   *) echo "unknown option $1" >&2; exit 2 ;; esac; done
 usage() { sed -n 2,22p "$0"; exit 2; }
 case "$mode" in probe|smoke|run|resume) ;; *) usage ;; esac
@@ -36,6 +37,10 @@ accum=$((effective / batch))
 export LEROBOT_DIR="${LEROBOT_DIR:-/workspace/lerobot-flux3}" HF_HOME="${HF_HOME:-/workspace/hf}"
 [ -f /workspace/train-env.sh ] || { echo "run train/setup.sh first" >&2; exit 1; }
 . /workspace/train-env.sh
+if [ -n "$policy_dir" ]; then
+  [ -f "$policy_dir/config.json" ] || { echo "--policy $policy_dir: no config.json there" >&2; exit 2; }
+  POLICY_DIR="$policy_dir"; echo "base policy: $POLICY_DIR"
+fi
 PY="$LEROBOT_DIR/.venv/bin/python"
 ENV_PREFIX="PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True TOKENIZERS_PARALLELISM=false"
 mkdir -p /workspace/train-logs
@@ -166,10 +171,11 @@ write_provenance() {  # the exact data contract this adapter is tied to, before 
   mkdir -p "$prov/maps"
   cp "$src/prepare_manifest.json" "$prov/"
   cp "$src"/maps/*.json "$prov/maps/" 2>/dev/null || true
-  python3 - "$prov/run.json" "$name" "$(sha "$src/prepare_manifest.json")" "$staged" "$mode" "$batch" "$accum" <<'PY'
+  python3 - "$prov/run.json" "$name" "$(sha "$src/prepare_manifest.json")" "$staged" "$mode" "$batch" "$accum" "$POLICY_DIR" <<'PY'
 import json, sys, time
-p, name, msha, stage, mode, b, a = sys.argv[1:]
+p, name, msha, stage, mode, b, a, policy = sys.argv[1:]
 json.dump({"dataset": name, "manifest_sha256": msha, "stage": stage, "mode": mode, "batch": int(b), "accum": int(a),
+           "policy_dir": policy,
            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, open(p, "w"), indent=1)
 PY
 }
