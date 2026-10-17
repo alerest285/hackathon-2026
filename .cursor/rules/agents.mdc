@@ -1,0 +1,6 @@
+---
+description: Team coordination protocol for this repo
+alwaysApply: true
+---
+Read and follow AGENTS.md at the repo root before every task. It is the contract.
+Start every session with `scripts/sync.sh`. Never edit a file you have not claimed with `scripts/claim.sh`.

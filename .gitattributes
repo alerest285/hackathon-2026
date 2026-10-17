@@ -1,0 +1,4 @@
+# Append-only logs: concurrent appends merge instead of conflicting.
+docs/log/*.md merge=union
+*.sh text eol=lf
+.githooks/* text eol=lf

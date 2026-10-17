@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Rejects commits that touch files you have not claimed. Bypass (humans only, say why in your log):
+#   HACK_SKIP_LOCKS=1 git commit ...
+[ "${HACK_SKIP_LOCKS:-0}" = 1 ] && exit 0
+cd "$(git rev-parse --show-toplevel)" || exit 1
+. scripts/lib.sh
+fetch_throttled 30
+git diff --cached --name-only --diff-filter=ACMRDT | scripts/check-locks.sh --owner "$(me)" || {
+  echo "Commit blocked. Claim the files (scripts/claim.sh), or unstage them." >&2; exit 1; }

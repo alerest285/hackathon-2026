@@ -1,0 +1,36 @@
+name: coordination
+# Re-runs the lock check on every pushed commit, against the locks in that commit's own tree.
+# The pre-commit hook is the gate; this catches commits made without it (other machines, --no-verify).
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  locks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - name: Check each commit against the locks it was made under
+        env:
+          BEFORE: ${{ github.event.before || github.event.pull_request.base.sha }}
+          AFTER: ${{ github.sha }}
+          OWNER: ${{ github.event.pull_request.user.login || github.actor }}
+        run: |
+          git config hack.member "$OWNER"
+          range="$BEFORE..$AFTER"
+          case "$BEFORE" in ""|0000000000000000000000000000000000000000) range="$AFTER -1" ;; esac
+          fail=0
+          for c in $(git rev-list --no-merges $range); do
+            if git log -1 --format=%B "$c" | grep -q '\[skip-locks\]'; then
+              echo "::warning::$(git log -1 --format='%h %an: %s' $c) skipped the lock check"; continue
+            fi
+            files="$(git diff-tree --no-commit-id --name-only -r "$c")"
+            if ! printf '%s\n' "$files" | HACK_REMOTE=none scripts/check-locks.sh --owner "$OWNER" --ref "$c"; then
+              echo "::error::commit $(git log -1 --format='%h %s' $c) touches files $OWNER had not claimed"
+              fail=1
+            fi
+          done
+          exit $fail
+      - name: Scripts parse
+        run: for f in scripts/*.sh .githooks/*; do bash -n "$f"; done
