@@ -57,6 +57,9 @@ scripts/claim.sh --steal T03         # only if the lock has expired; say so in y
 
 - **Never edit a file outside your locks.** These paths are free for everyone: `locks/`,
   `tasks/`, `docs/decisions/`, `docs/status/`, `docs/research/`, and your own `docs/log/<you>.md`.
+- **One name per agent.** A lock belongs to member + agent. Two agents of the same person are two holders and
+  cannot overlap either. Give each session its own name: `HACK_AGENT=claude-infra` in that agent's shell
+  (or `git config hack.agent <name>` in a separate clone or worktree).
 - Claims refuse to overlap. If `claim.sh` reports an overlap, narrow your globs, wait, or
   leave a note in that person's task file. Do not take a broader glob than you need.
 - Shared hot files (`pyproject.toml`, lockfiles, root configs) are claimed like any other

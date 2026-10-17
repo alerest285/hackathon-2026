@@ -26,7 +26,7 @@ jobs:
               echo "::warning::$(git log -1 --format='%h %an: %s' $c) skipped the lock check"; continue
             fi
             files="$(git diff-tree --no-commit-id --name-only -r "$c")"
-            if ! printf '%s\n' "$files" | HACK_REMOTE=none scripts/check-locks.sh --owner "$OWNER" --ref "$c"; then
+            if ! printf '%s\n' "$files" | HACK_REMOTE=none scripts/check-locks.sh --owner "$OWNER" --agent '*' --ref "$c"; then
               echo "::error::commit $(git log -1 --format='%h %s' $c) touches files $OWNER had not claimed"
               fail=1
             fi

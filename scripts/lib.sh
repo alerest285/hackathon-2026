@@ -3,6 +3,14 @@
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "error: not inside the repo" >&2; exit 1; }
 cd "$ROOT"
+
+# If the coordination scripts themselves have uncommitted edits, run from a temp copy:
+# pulls stash local edits, and bash must never have the file it is executing swapped underneath it.
+case "$0" in */scripts/*.sh|scripts/*.sh) _hack_self=1 ;; *) _hack_self=0 ;; esac
+if [ "$_hack_self" = 1 ] && [ -z "${HACK_REEXEC:-}" ] && ! git diff --quiet HEAD -- scripts/ 2>/dev/null; then
+  _hack_tmp="$(mktemp -d)"; cp "$ROOT"/scripts/*.sh "$_hack_tmp"/
+  HACK_REEXEC=1 exec bash "$_hack_tmp/$(basename "$0")" "$@"
+fi
 REMOTE="${HACK_REMOTE:-origin}"
 BRANCH="${HACK_BRANCH:-main}"
 LOCK_HOURS="${HACK_LOCK_HOURS:-3}"
@@ -43,12 +51,23 @@ on_main_or_die() {
   [ "$b" = "$BRANCH" ] || die "you are on '$b'. This repo is trunk-based: work on $BRANCH (see docs/decisions/01)."
 }
 
+# Rebase onto the remote without ever losing uncommitted work. Local edits go into a
+# named stash first; if they cannot be re-applied cleanly they STAY in `git stash list`.
 pull_latest() {
   has_remote || return 0
-  git pull -q --rebase --autostash "$REMOTE" "$BRANCH" 2>/dev/null || {
+  local stashed=0
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    git stash push -q -m "hack-autosave $(now_iso)" && stashed=1
+  fi
+  if ! git pull -q --rebase "$REMOTE" "$BRANCH" 2>/dev/null; then
     git rebase --abort 2>/dev/null || true
-    die "git pull --rebase failed (conflict). Resolve it by hand, then rerun."
-  }
+    [ $stashed = 1 ] && { git stash pop -q || die "pull failed AND your edits did not re-apply. They are safe in: git stash list (hack-autosave)"; }
+    die "git pull --rebase failed (your local commits conflict with main). Resolve by hand, then rerun."
+  fi
+  if [ $stashed = 1 ] && ! git stash pop -q; then
+    die "your uncommitted edits conflict with the update. Nothing is lost: a copy stays in 'git stash list' (hack-autosave).
+Conflict markers are now in the files 'git status' shows as UU. Resolve them, 'git add' them, then 'git stash drop'."
+  fi
 }
 
 # ---- locks -----------------------------------------------------------------
