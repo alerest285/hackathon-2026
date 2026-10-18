@@ -141,7 +141,7 @@ def main():
         task = a.task or tasks[int(np.asarray(data["task_index"])[rows[0]])]
         # moments: evenly spaced, plus the frame where the gripper closes fastest (a grasp)
         lo, hi = n_obs, n - chunk - 1
-        ts = list(np.linspace(lo, hi, a.per_episode).astype(int))
+        ts = [int(x) for x in np.linspace(lo, hi, a.per_episode)]
         g = np.diff(A[:, 5])
         grasp = int(np.clip(np.argmin(g[lo:hi]) + lo - 10, lo, hi))
         if all(abs(grasp - t) > 15 for t in ts):
@@ -181,9 +181,9 @@ def main():
             rec = A[t: t + chunk]
             m = min(len(rec), len(pred))
             summary.append({"episode": e, "t": t, "task": task, "seconds": round(dt, 2), "video_frames": len(vid),
-                            "pred_motion": dict(zip(J, np.round(pred[m - 1] - A[t - 1], 1).tolist())),
-                            "real_motion": dict(zip(J, np.round(rec[m - 1] - A[t - 1], 1).tolist())),
-                            "mean_abs_err": dict(zip(J, np.round(np.abs(pred[:m] - rec[:m]).mean(0), 1).tolist()))})
+                            "pred_motion": dict(zip(J, np.round((pred[m - 1] - A[t - 1]).astype(float), 1).tolist())),
+                            "real_motion": dict(zip(J, np.round((rec[m - 1] - A[t - 1]).astype(float), 1).tolist())),
+                            "mean_abs_err": dict(zip(J, np.round(np.abs(pred[:m] - rec[:m]).mean(0).astype(float), 1).tolist()))})
             print(f"ep {e} t {t}: {dt:.1f} s, {len(vid)} imagined frames; motion over the chunk "
                   f"pred {summary[-1]['pred_motion']} real {summary[-1]['real_motion']}", flush=True)
         Image.fromarray(np.concatenate(sheet_rows, 0)).save(a.out / f"sheet_ep{e:03d}.png")
