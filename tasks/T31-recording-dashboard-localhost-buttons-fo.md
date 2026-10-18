@@ -1,8 +1,8 @@
 ---
 id: T31
 title: Recording dashboard: localhost buttons for teleop data collection
-status: todo
-owner: 
+status: doing
+owner: alerest285
 depends: 
 paths:
   - console/record_app.py
