@@ -42,6 +42,7 @@
       <div><div class="mute">saved this session</div><div class="big" id="saved">0</div></div>
       <div><div class="mute">episodes in dataset</div><div class="big" id="total">0</div></div>
       <div><div class="mute">loop</div><div class="big" id="hz">-</div></div>
+      <div><div class="mute">camera stalls (episode)</div><div class="big" id="stalls">0</div></div>
     </div>
     <div class="progress" style="margin-top:10px"><div id="prog"></div></div>
     <div class="mute" style="margin-top:8px" id="task"></div>
@@ -71,6 +72,7 @@ async function tick() {
     $('elapsed').textContent = st.elapsed_s.toFixed(1) + ' / ' + st.episode_s + ' s';
     $('frames').textContent = st.frames; $('saved').textContent = st.saved_this_session; $('total').textContent = st.episodes_total;
     $('hz').textContent = st.loop_hz ? st.loop_hz + ' Hz' : '-';
+    $('stalls').textContent = st.ep_stalls; $('stalls').style.color = st.ep_stalls ? 'var(--bad)' : '';
     $('prog').style.width = Math.min(100, 100 * st.elapsed_s / st.episode_s) + '%';
     $('task').textContent = 'task: "' + st.task + '"  ·  ' + st.dataset;
     $('b-start').disabled = !idle; $('b-save').disabled = !(rec || tu); $('b-redo').disabled = !(rec || tu);

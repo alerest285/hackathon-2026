@@ -74,7 +74,13 @@ class Recorder:
                                                 use_videos=True))
         root = Path("~/hackathon-data").expanduser() / a.dataset
         repo = f"{a.repo_owner}/{a.dataset}"
-        if (root / "meta" / "info.json").exists():
+        info = root / "meta" / "info.json"
+        if info.exists() and json.loads(info.read_text()).get("total_episodes", 0) == 0 \
+                and not (root / "data").exists() and not (root / "videos").exists() and not (root / "images").exists():
+            info.unlink()  # an empty shell from an aborted start (0 episodes, no data): start fresh, nothing to lose
+            (root / "meta").rmdir() if not any((root / "meta").iterdir()) else None
+            root.rmdir() if not any(root.iterdir()) else None
+        if info.exists():
             self.ds = LeRobotDataset.resume(repo, root=root, streaming_encoding=True, encoder_threads=2)
         else:
             root.parent.mkdir(parents=True, exist_ok=True)
@@ -91,6 +97,8 @@ class Recorder:
         self.message = ""
         self.jpeg = {}
         self.loop_hz = 0.0
+        self.stalls_total = 0
+        self.ep_stalls = 0
         self._last_jpeg = 0.0
         self.thread = threading.Thread(target=self._run, name="record-loop", daemon=True)
 
@@ -106,6 +114,7 @@ class Recorder:
         self.state, self.message = "idle", "Teleop live. Press Start episode."
         period = 1.0 / self.a.fps
         n, t_hz = 0, time.perf_counter()
+        last_obs = None
         try:
             while True:
                 t0 = time.perf_counter()
@@ -113,12 +122,23 @@ class Recorder:
                     cmd, self.cmd = self.cmd, None
                 if cmd and self._handle(cmd):
                     break
-                obs = self.robot.get_observation()
+                try:
+                    obs = self.robot.get_observation()
+                    last_obs, stalled = obs, False
+                except TimeoutError as e:  # a camera's newest frame is >500 ms old: keep teleop alive, skip this tick
+                    self.stalls_total += 1
+                    if self.state == "recording":
+                        self.ep_stalls += 1
+                        self.message = f"camera stall ({self.ep_stalls} this episode): Redo recommended. {e}"
+                    if last_obs is None:
+                        time.sleep(0.05)
+                        continue
+                    obs, stalled = last_obs, True
                 obs_p = self.o_proc(obs)
                 act = self.teleop.get_action()
                 act_p = self.t_proc((act, obs))
                 self.robot.send_action(self.r_proc((act_p, obs)))
-                if self.state == "recording":
+                if self.state == "recording" and not stalled:
                     frame = {**build_dataset_frame(self.ds.features, obs_p, prefix=OBS_STR),
                              **build_dataset_frame(self.ds.features, act_p, prefix=ACTION), "task": self.a.task}
                     self.ds.add_frame(frame)
@@ -145,7 +165,7 @@ class Recorder:
     def _handle(self, cmd) -> bool:
         """Returns True when the loop should end."""
         if cmd == "start" and self.state == "idle":
-            self.frames, self.ep_start = 0, time.perf_counter()
+            self.frames, self.ep_start, self.ep_stalls = 0, time.perf_counter(), 0
             self.state, self.message = "recording", "Recording..."
         elif cmd == "save" and self.state in ("recording", "timeup"):
             if self.frames < MIN_FRAMES:
@@ -154,7 +174,8 @@ class Recorder:
             self.state, self.message = "saving", "Saving episode..."
             self.ds.save_episode()
             self.saved_this_session += 1
-            self.state, self.message = "idle", f"Saved ({self.frames} frames). Reset the scene, then Start episode."
+            note = f" WARNING: {self.ep_stalls} camera stalls in it." if self.ep_stalls else ""
+            self.state, self.message = "idle", f"Saved ({self.frames} frames).{note} Reset the scene, then Start episode."
             self.frames = 0
         elif cmd == "redo" and self.state in ("recording", "timeup"):
             self.ds.clear_episode_buffer()
@@ -188,7 +209,8 @@ class Recorder:
         return {"state": self.state, "message": self.message, "frames": self.frames, "elapsed_s": round(el, 1),
                 "episode_s": self.a.episode_s, "episodes_total": int(self.ds.meta.total_episodes),
                 "saved_this_session": self.saved_this_session, "task": self.a.task, "dataset": str(self.root),
-                "loop_hz": round(self.loop_hz, 1), "fps": self.a.fps}
+                "loop_hz": round(self.loop_hz, 1), "fps": self.a.fps, "ep_stalls": self.ep_stalls,
+                "stalls_total": self.stalls_total}
 
 
 def make_handler(rec: Recorder):
