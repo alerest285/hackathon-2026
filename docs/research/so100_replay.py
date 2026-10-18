@@ -13,12 +13,14 @@ the episode's first command over --ramp-s, then plays at --speed (0.5 = half spe
 --limits, and body joints move at most --max-step degrees per 30 Hz tick. LeRobot's own guard caps the distance from
 the measured position (--max-relative). Ctrl-C stops: torque stays on and the arm holds. Keep a hand on the power
 switch. No other program may hold the port (stop the console first).
-Writes ~/hackathon-data/replay/replay_<stamp>.npz (commands and measured states).
+Writes ~/hackathon-data/replay/replay_<stamp>.npz (commands, measured states and measured_valid;
+missing measurements are NaN).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -61,11 +63,15 @@ def main():
 
     robot = SO101Follower(SO101FollowerConfig(port=a.port, id=a.robot_id, use_degrees=True,
                                               max_relative_target=a.max_relative, disable_torque_on_disconnect=False))
-    robot.connect(calibrate=False)
-    cmds, meas = [], []
+    cmds, meas, measured_valid = [], [], []
+    interrupted = False
     try:
+        # This helper has no cameras. Open only the bus: Robot.connect() would configure the motors
+        # (including torque changes) before we can reject a calibration mismatch.
+        robot.bus.connect()
         if not robot.bus.is_calibrated:
             raise SystemExit(f"the motors do not match {robot.calibration_fpath}: not moving")
+        robot.configure()
 
         def state():
             obs = robot.get_observation()
@@ -95,20 +101,46 @@ def main():
             send(cmd)
             last = cmd
             cmds.append(cmd)
-            meas.append(state())
+            # Keep a row for every successful send, even if its observation fails or is interrupted.
+            meas.append(np.full(len(JOINTS), np.nan))
+            measured_valid.append(False)
+            meas[-1] = state()
+            measured_valid[-1] = True
             t_next += 1 / FPS
             time.sleep(max(0.0, t_next - time.perf_counter()))
         print("replay done; the arm holds its last command")
     except KeyboardInterrupt:
-        print("\nstopped: the arm holds its last command")
+        interrupted = True
+        print("\nstopped; cleanup leaves motor torque unchanged")
     finally:
-        robot.disconnect()  # torque stays on (disable_torque_on_disconnect=False)
-        if cmds:
-            out = Path(f"~/hackathon-data/replay/replay_{time.strftime('%Y%m%dT%H%M%S')}.npz").expanduser()
-            np.savez(out, cmd=np.array(cmds), measured=np.array(meas), episode=str(a.episode), speed=a.speed, start=i0)
-            err = np.abs(np.array(cmds) - np.array(meas))[:, :5]
-            print(f"saved {out}; |command - measured| body joints p50 {np.percentile(err, 50):.1f} p95 "
-                  f"{np.percentile(err, 95):.1f} deg")
+        primary_error = sys.exception()
+        finalization_error = None
+        try:
+            if robot.bus.is_connected:
+                robot.bus.disconnect(disable_torque=False)
+        except Exception as exc:
+            finalization_error = exc
+            print(f"could not close replay bus: {exc}", file=sys.stderr)
+        try:
+            if cmds:
+                out = Path(f"~/hackathon-data/replay/replay_{time.strftime('%Y%m%dT%H%M%S')}.npz").expanduser()
+                out.parent.mkdir(parents=True, exist_ok=True)
+                commands, measured = np.array(cmds), np.array(meas)
+                valid = np.array(measured_valid, dtype=bool)
+                np.savez(out, cmd=commands, measured=measured, measured_valid=valid,
+                         episode=str(a.episode), speed=a.speed, start=i0)
+                if valid.any():
+                    err = np.abs(commands[valid] - measured[valid])[:, :5]
+                    print(f"saved {out}; |command - measured| body joints p50 {np.percentile(err, 50):.1f} p95 "
+                          f"{np.percentile(err, 95):.1f} deg ({valid.sum()}/{len(valid)} measurements valid)")
+                else:
+                    print(f"saved {out}; no valid measurements")
+        except Exception as exc:
+            if finalization_error is None:
+                finalization_error = exc
+            print(f"could not finish replay log: {exc}", file=sys.stderr)
+        if primary_error is None and not interrupted and finalization_error is not None:
+            raise finalization_error
 
 
 if __name__ == "__main__":
