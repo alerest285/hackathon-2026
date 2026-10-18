@@ -249,7 +249,7 @@ def main():
             name = f"dream_sheet_ep{e:03d}.png" if a.rollout > 1 else f"sheet_ep{e:03d}.png"
             Image.fromarray(np.concatenate(sheet_rows, 0)).save(a.out / name)
     (a.out / "summary.json").write_text(json.dumps(summary, indent=1))
-    print(f"wrote {a.out}")
+    print(f"wrote {a.out}; peak GPU memory {torch.cuda.max_memory_reserved() / 2**30:.1f} GiB reserved")
 
 
 if __name__ == "__main__":
