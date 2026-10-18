@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Recorder</title>
+<style>
+  :root { --bg:#f6f6f4; --card:#fff; --ink:#1b1b1b; --mute:#6b6b6b; --line:#e3e3df; --accent:#1f4fd1; --ok:#1d7a3a; --bad:#b91c1c; --warn:#b45309; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#121212; --card:#1b1b1b; --ink:#ececec; --mute:#9a9a9a; --line:#2c2c2c; --accent:#7aa2ff; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 -apple-system, system-ui, sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; display:grid; gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; }
+  .bar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  h1 { font-size:17px; margin:0; } .mute { color:var(--mute); }
+  .pill { padding:3px 10px; border-radius:99px; font-size:13px; font-weight:600; border:1px solid var(--line); }
+  .rec { background:var(--bad); color:#fff; border-color:var(--bad); } .idle { color:var(--ok); } .warn { background:var(--warn); color:#fff; }
+  button { font:inherit; font-weight:600; padding:14px 22px; border-radius:10px; border:1px solid var(--line); background:var(--card); color:inherit; cursor:pointer; min-width:150px; }
+  button:disabled { opacity:.35; cursor:default; }
+  .start { background:var(--accent); color:#fff; border-color:var(--accent); } .save { background:var(--ok); color:#fff; border-color:var(--ok); }
+  .redo { border-color:var(--warn); color:var(--warn); } .stop { border-color:var(--bad); color:var(--bad); }
+  .cams { display:grid; grid-template-columns:1fr 1fr; gap:10px; } .cams img { width:100%; aspect-ratio:4/3; object-fit:cover; background:#000; border-radius:8px; display:block; }
+  .big { font-size:28px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .progress { height:8px; background:var(--line); border-radius:99px; overflow:hidden; } .progress > div { height:100%; background:var(--accent); width:0; }
+  @media (max-width:760px) { .cams { grid-template-columns:1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <div class="card bar"><h1>Data Recorder</h1><span id="state" class="pill">...</span><span id="msg" class="mute"></span></div>
+  <div class="card">
+    <div class="bar">
+      <button id="b-start" class="start" onclick="post('start')">Start episode</button>
+      <button id="b-save" class="save" onclick="post('save')">Save</button>
+      <button id="b-redo" class="redo" onclick="post('redo')">Redo (discard)</button>
+      <span style="flex:1"></span>
+      <button id="b-stop" class="stop" onclick="if(confirm('Finalize the dataset and stop?')) post('stop')">Stop &amp; finalize</button>
+    </div>
+    <div class="bar" style="margin-top:12px">
+      <div><div class="mute">this episode</div><div class="big" id="elapsed">0.0 s</div></div>
+      <div><div class="mute">frames</div><div class="big" id="frames">0</div></div>
+      <div><div class="mute">saved this session</div><div class="big" id="saved">0</div></div>
+      <div><div class="mute">episodes in dataset</div><div class="big" id="total">0</div></div>
+      <div><div class="mute">loop</div><div class="big" id="hz">-</div></div>
+    </div>
+    <div class="progress" style="margin-top:10px"><div id="prog"></div></div>
+    <div class="mute" style="margin-top:8px" id="task"></div>
+    <div class="mute">Space = Start / Save, R = Redo. The leader always drives the arm: use it to reset between episodes.</div>
+  </div>
+  <div class="card cams">
+    <div><div class="mute">scene (fixed)</div><img id="cam-scene" alt="scene"></div>
+    <div><div class="mute">wrist</div><img id="cam-wrist" alt="wrist"></div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let st = {};
+async function post(c) { await fetch('/' + c, {method:'POST'}); setTimeout(tick, 100); }
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (e.code === 'Space') { e.preventDefault(); post(st.state === 'idle' ? 'start' : 'save'); }
+  if (e.key === 'r' || e.key === 'R') post('redo');
+});
+async function tick() {
+  try {
+    st = await (await fetch('/status')).json();
+    const rec = st.state === 'recording', tu = st.state === 'timeup', idle = st.state === 'idle';
+    $('state').textContent = {recording:'REC', timeup:'TIME UP', idle:'ready', saving:'saving', connecting:'connecting', stopped:'stopped', error:'ERROR'}[st.state] || st.state;
+    $('state').className = 'pill ' + (rec ? 'rec' : tu || st.state === 'error' ? 'warn' : idle ? 'idle' : '');
+    $('msg').textContent = st.message || '';
+    $('elapsed').textContent = st.elapsed_s.toFixed(1) + ' / ' + st.episode_s + ' s';
+    $('frames').textContent = st.frames; $('saved').textContent = st.saved_this_session; $('total').textContent = st.episodes_total;
+    $('hz').textContent = st.loop_hz ? st.loop_hz + ' Hz' : '-';
+    $('prog').style.width = Math.min(100, 100 * st.elapsed_s / st.episode_s) + '%';
+    $('task').textContent = 'task: "' + st.task + '"  ·  ' + st.dataset;
+    $('b-start').disabled = !idle; $('b-save').disabled = !(rec || tu); $('b-redo').disabled = !(rec || tu);
+    $('b-stop').disabled = ['stopped', 'saving', 'connecting'].includes(st.state);
+  } catch (e) { $('state').textContent = 'not reachable'; }
+}
+function cams() { for (const c of ['scene','wrist']) { const i = new Image(); i.onload = () => { $('cam-'+c).src = i.src; }; i.src = '/cam/' + c + '.jpg?' + Date.now(); } }
+setInterval(tick, 250); setInterval(cams, 250); tick();
+</script>
+</body>
+</html>
