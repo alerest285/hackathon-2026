@@ -187,3 +187,30 @@ From rest, the LoRA dreams a full reach to the correct side (ep 20: pan +22 / li
 about 3 plans. **Caveat: in-sample.** Episodes 20 and 40 were in the LoRA's training set (LeRobot holds out the last
 ceil(0.1 × 82) = 9 episodes, 73–81), so part of this agreement may be memorization. The honest comparison is on
 episodes 73–81.
+
+## 10. Robot-perspective prompt, base vs LoRA, incl. held-out episodes
+
+The demos fix the sides. Green blocks end on the image-left of the line, which is the robot's right: the scene
+camera looks down with the robot at the top, and positive pan is the robot's right, hand-checked. Orange blocks end
+on the robot's left. Prompt (`--task`): "Put the green objects on the robot's right side of the black line and the
+orange objects on the robot's left side of the black line". Episodes 20/40 (in the LoRA's training set) and 75/79
+(held out: the last 9 episodes, 73–81), t = 8 and 200, 6-plan dreams. GPU guarded at 79 GB total (peaks 76.7 / 77.4
+GB beside the robotpov LoRA run).
+
+| | moments | body joints same direction | mean \|dream − real\| | pan to the correct side |
+|---|---:|---:|---:|---:|
+| base, original prompt, eps 20/40 | 4 | 63% | 47° | 50% |
+| LoRA 004000, original prompt, eps 20/40 | 4 | 79% | 29° | 100% |
+| base, robot prompt, eps 20/40 | 4 | 63% | 48° | 75% |
+| LoRA 004000, robot prompt, eps 20/40 | 4 | 89% | 32° | 100% |
+| **base, robot prompt, held out 75/79** | 4 | 69% | 53° | 50% |
+| **LoRA 004000, robot prompt, held out 75/79** | 4 | **94%** | **34°** | **100%** |
+
+- **The LoRA's gain holds on held-out demos** (94% vs 69% same direction), so it is not only memorizing training
+  episodes.
+- **The rewording changes little.** The base model stays at chance on pan; the LoRA, trained on the original wording,
+  handles the robot-perspective one as well or slightly better. The samples are small: 4 moments, 16–19 moving
+  joints per row.
+
+Outputs: `~/hackathon-data/imagine/dream6-robotprompt-{base,lora004000}/` and `compare_robotprompt_ep075.png` /
+`_ep079.png` (rows per moment: base dream, LoRA dream, real).
