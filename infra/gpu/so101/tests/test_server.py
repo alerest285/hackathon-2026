@@ -448,6 +448,12 @@ def test_norm_stats_load_flat_or_nested_and_refuse_bad_files(tmp_path):
     nested.write_text(json.dumps({"state": {"q01": NEW_CAL["state_q01"], "q99": NEW_CAL["state_q99"]}}))
     only_state, _ = load_norm_stats(nested)
     assert list(only_state) == ["state"]  # the action stream keeps the checkpoint's
+    wrapped = tmp_path / "HFSIM_NORMALIZATION.json"  # saad-calib's file: the quantiles under "stats", plus notes
+    wrapped.write_text(json.dumps({"source": "multimodalart/flux-3-action-so101-sim@09edebb",
+                                   "stats": {"state": {"q01": NEW_CAL["state_q01"], "q99": NEW_CAL["state_q99"]},
+                                             "action": {"q01": NEW_CAL["action_q01"], "q99": NEW_CAL["action_q99"]}}}))
+    both, _ = load_norm_stats(wrapped)
+    assert sorted(both) == ["action", "state"] and both["action"]["q99"][4] == 5.0
     for bad, why in (({"state_q01": [0] * 5, "state_q99": [1] * 5}, "6 finite"),
                      ({"state_q01": [0] * 6, "state_q99": [0] * 6}, "q99 > q01"),
                      ({"other": 1}, "no state or action")):

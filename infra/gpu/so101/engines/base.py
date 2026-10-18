@@ -124,13 +124,16 @@ def load_norm_stats(path) -> tuple[dict, str]:
     """({stream: {"q01": [6], "q99": [6]}}, sha256 of the file) from a JSON stats file, for --norm-stats.
 
     Accepts the hello's flat keys (state_q01, state_q99, action_q01, action_q99) or flux-action's nested form
-    ({"state": {"q01", "q99"}, "action": {...}}). A stream may be left out (it keeps the checkpoint's); each
+    ({"state": {"q01", "q99"}, "action": {...}}), either one optionally under a top-level "stats" key. A stream may
+    be left out (it keeps the checkpoint's); each
     present one needs 6 finite values with q99 > q01, since normalization divides by q99 - q01.
     """
     raw = Path(path).expanduser().read_bytes()
     data = json.loads(raw)
     if not isinstance(data, dict):
         raise ValueError(f"{path}: expected a JSON object")
+    if isinstance(data.get("stats"), dict) and not any(k in data for k in ("state", "action", "state_q01", "action_q01")):
+        data = data["stats"]  # a wrapper such as HFSIM_NORMALIZATION.json: {"stats": {"state": ..., "action": ...}}
     stats = {}
     for stream in NORM_STREAMS:
         nested = data.get(stream)
