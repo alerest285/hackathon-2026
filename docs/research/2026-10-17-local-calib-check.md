@@ -169,3 +169,21 @@ earlier). Peak 23.8 GiB. Outputs: `/workspace/outputs/imagine/dream6/` and `~/ha
   +37. That is the same pan-left bias as live run 2.
 - **While it holds a block, it dreams the carry with the right shoulder and elbow direction** (ep 20 t 200: lift −83 /
   elbow +63 against real −28 / +48), but pan and wrist_roll again go the wrong way.
+
+## 9. Dreams with the hfsim LoRA (checkpoint 004000 raw) vs zero-shot
+
+Same 4 moments and 6-plan rollouts (`--adapter …213030-6ec3/checkpoints/004000/pretrained_model`, LeRobot engine,
+peak 24.6 GiB). Outputs: `/workspace/outputs/imagine/dream6-lora004000/` and `~/hackathon-data/imagine/dream6-lora004000/`.
+
+| over 6.4 s, vs Saad's real motion | zero-shot | LoRA 004000 |
+|---|---:|---:|
+| same direction, joints that moved > 10° (22) | 68% | 77% |
+| same direction, body joints | 63% | 79% |
+| mean \|dream − real\| end motion, body joints | 47° | 29° |
+| pan to the correct side | 2/4 | 4/4 |
+
+From rest, the LoRA dreams a full reach to the correct side (ep 20: pan +22 / lift +104 / elbow −106 vs real +41 / +141
+/ −117), where the zero-shot model dreamed a partial reach to the wrong side. The dream still breaks down after
+about 3 plans. **Caveat: in-sample.** Episodes 20 and 40 were in the LoRA's training set (LeRobot holds out the last
+ceil(0.1 × 82) = 9 episodes, 73–81), so part of this agreement may be memorization. The honest comparison is on
+episodes 73–81.
