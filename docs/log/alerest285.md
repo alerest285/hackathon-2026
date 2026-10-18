@@ -58,3 +58,4 @@ Append-only, newest at the bottom. One line per event.
 - 2026-10-17T22:49Z alerest285 [T22] (claude-code) release (done): min-frames fix
 - 2026-10-18T00:00Z alerest285 [T29] (claude-code) release (done): stall timeout
 - 2026-10-18T01:24Z alerest285 [T23] (claude-train) hfsim LoRA run lora_so100_pick_cube_hfsim_v1-b2x4-1017-213030-6ec3 finished 00:23Z, EXIT 0, 10000 microsteps in 2h51 (1.03 s/step with so101-serve sharing the GPU). eval_loss (raw, 64 samples) plateaued .082-.094 from step 2500; last four: 8500 .082, 9000 .082, 9500 .082, 10000 .093. qmap run stopped at 4272 (ckpts to 004000). Neither adapter tested on the arm yet.
+- 2026-10-18T03:14Z alerest285 [T23] (claude-train) release (todo): pipeline done + reviewed; 2 adapters trained; only open item: arm A/B (Saad), see handoff
