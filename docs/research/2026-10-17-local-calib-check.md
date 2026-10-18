@@ -155,3 +155,17 @@ with the policy's own VAE: 11 latent frames, 41 frames of scene|wrist, 0.6 s per
   moving joints (50 joint-moments; elbow 25%, wrist_flex 75%), with about half the real amplitude. The model often
   imagines holding still or lifting where the operator carried the block to its side of the line. 16 moments are a
   small sample, and a human demo is only one valid continuation.
+
+## 8. Dream rollouts (`so100_imagine.py --rollout 6`, 6.4 s per moment)
+
+Same zero-shot hfsim model, episodes 20 and 40, starts at t = 8 (rest) and t = 200 (holding a block). 6 plans of 32
+executed ticks, each fed the previous plan's imagined frames (ticks T+25, T+32) and commands (state = command 3 ticks
+earlier). Peak 23.8 GiB. Outputs: `/workspace/outputs/imagine/dream6/` and `~/hackathon-data/imagine/dream6/`.
+
+- **The dream holds for about 2–3 plans (2–3 s), then breaks down.** The arm in the scene view fades into a ghost and
+  the wrist view blurs: errors compound because the model now reads its own 4-step-sampled frames.
+- **From rest, it dreams of reaching out, but to the wrong side and not far enough.** Over 6.4 s: ep 20 dream lift
+  +63 / elbow −22 / pan −18, against real +141 / −117 / +41; ep 40 dream +60 / −13 / −12, against real +97 / −47 /
+  +37. That is the same pan-left bias as live run 2.
+- **While it holds a block, it dreams the carry with the right shoulder and elbow direction** (ep 20 t 200: lift −83 /
+  elbow +63 against real −28 / +48), but pan and wrist_roll again go the wrong way.
