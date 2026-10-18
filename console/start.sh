@@ -12,7 +12,11 @@
 # Ctrl-C stops the console and the tunnel. The arm holds its last command; the server keeps running on the pod.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-POD_HOST="${POD_HOST:-<pod-host>}"; POD_SSH_PORT="${POD_SSH_PORT:-<ssh-port>}"; LOCAL_PORT="${LOCAL_PORT:-18000}"
+# The pod address is NOT in the repo (public). Put it in ~/hackathon-data/pod.env (never committed):
+#   POD_HOST=<ip>   POD_SSH_PORT=<port>      (ask the team chat; it changes when the pod restarts)
+[ -f "${HACK_POD_ENV:-$HOME/hackathon-data/pod.env}" ] && . "${HACK_POD_ENV:-$HOME/hackathon-data/pod.env}"
+POD_HOST="${POD_HOST:-}"; POD_SSH_PORT="${POD_SSH_PORT:-}"; LOCAL_PORT="${LOCAL_PORT:-18000}"
+[ -n "$POD_HOST" ] && [ -n "$POD_SSH_PORT" ] || { echo "error: set POD_HOST and POD_SSH_PORT in ~/hackathon-data/pod.env (ask the team chat)" >&2; exit 1; }
 ROBOT_DIR="${HACK_ROBOT_DIR:-$ROOT/robot}"; export HACK_ROBOT_DIR="$ROBOT_DIR"
 SSH=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 -p "$POD_SSH_PORT" "root@$POD_HOST")
 die() { echo "error: $*" >&2; exit 1; }
