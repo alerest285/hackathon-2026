@@ -40,7 +40,7 @@ import numpy as np
 import pyarrow.parquet as pq
 import torch
 from einops import rearrange
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 J = ["pan", "lift", "elbow", "wflex", "wroll", "grip"]
 LAG = 3  # ticks the measured state trails the command in Saad's teleop data (dream rollouts assume this tracking)
@@ -60,7 +60,7 @@ def capture_sampler(sampling):
         setattr(sampling, name, wrapped)
 
 
-def flux_action_backend(checkpoint: str) -> dict:
+def flux_action_backend(checkpoint: str, steps: int | None = None) -> dict:
     """BFL's standalone loader (flux-action venv): a full policy directory, e.g. the hfsim-norm base."""
     from flux_action.inference import sampling
     from flux_action.inference.so101 import load_policy
@@ -71,6 +71,8 @@ def flux_action_backend(checkpoint: str) -> dict:
     policy.set_text_encoder_offload(True)
     policy.to("cuda")
     cfg = policy.config
+    if steps:
+        cfg.num_inference_steps = steps  # the policy reads it at every plan
     keys = list(cfg.camera_keys)  # images.scene, images.wrist (canvas left, right)
     order = [0] * (cfg.n_obs_steps - 1) + [cfg.n_obs_steps - 1]
 
@@ -87,7 +89,7 @@ def flux_action_backend(checkpoint: str) -> dict:
             "plan": plan, "name": f"checkpoint {checkpoint}"}
 
 
-def lerobot_backend(adapter: str) -> dict:
+def lerobot_backend(adapter: str, steps: int | None = None) -> dict:
     """The server's LeRobot engine (lerobot-flux3 venv): base + LoRA adapter, normalization from the adapter's
     processors, exactly as serve.sh --engine lerobot --adapter loads it."""
     import sys
@@ -98,7 +100,7 @@ def lerobot_backend(adapter: str) -> dict:
     sys.path.insert(0, str(REPO / "infra/gpu/so101"))
     from engines.lerobot import LeRobotEngine
 
-    engine = LeRobotEngine("black-forest-labs/flux-3-action-so101", adapter=adapter, device="cuda")
+    engine = LeRobotEngine("black-forest-labs/flux-3-action-so101", adapter=adapter, device="cuda", steps=steps)
     base = engine.policy.get_base_model() if hasattr(engine.policy, "get_base_model") else engine.policy
     cfg = base.config
     keys = [f"images.{c}" for c in engine.cameras]
@@ -157,11 +159,16 @@ def write_mp4(path: Path, frames: list[np.ndarray], fps: int = 30):
             c.mux(p)
 
 
-def label(img: np.ndarray, text: str) -> np.ndarray:
+def label(img: np.ndarray, text: str, size: int = 12) -> np.ndarray:
     im = Image.fromarray(img)
     d = ImageDraw.Draw(im)
-    d.rectangle((0, 0, 8 * len(text) + 6, 14), fill=(0, 0, 0))
-    d.text((3, 1), text, fill=(255, 255, 0))
+    try:
+        font = ImageFont.load_default(size=size)
+    except TypeError:  # Pillow < 10.1
+        font = ImageFont.load_default()
+    w = d.textlength(text, font=font)
+    d.rectangle((0, 0, w + 8, size + 6), fill=(0, 0, 0))
+    d.text((4, 2), text, fill=(255, 255, 0), font=font)
     return np.asarray(im)
 
 
@@ -176,11 +183,15 @@ def main():
     p.add_argument("--task", help="caption override (default: the episode's own task)")
     p.add_argument("--rollout", type=int, default=1, help="plans chained in imagination (1 = single plan)")
     p.add_argument("--t", type=int, nargs="+", help="explicit start ticks (default: evenly spaced, plus a grasp)")
+    p.add_argument("--steps", type=int, help="sampling steps (live: the checkpoint's 4; more = sharper imagined frames)")
+    p.add_argument("--crossfade", type=int, default=6, help="dream: frames blended across each plan boundary (0 = off)")
+    p.add_argument("--scale", type=int, default=1, help="dream video upscale factor (2 = 1024x1024)")
+    p.add_argument("--save-frames", action="store_true", help="dream .npz also holds all frames (~70 MB per moment)")
     p.add_argument("--out", type=Path, default=Path(f"/workspace/outputs/imagine/{time.strftime('%Y%m%dT%H%M%S')}"))
     a = p.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
 
-    m = lerobot_backend(a.adapter) if a.adapter else flux_action_backend(a.checkpoint)
+    m = lerobot_backend(a.adapter, a.steps) if a.adapter else flux_action_backend(a.checkpoint, a.steps)
     cfg, keys, n_lat = m["cfg"], m["keys"], m["n_lat"]
     n_obs, chunk = cfg.n_obs_steps, cfg.chunk_size
     lh, lw = cfg.latent_hw
@@ -202,10 +213,17 @@ def main():
         """--rollout plans from tick t; returns the imagined frames for ticks t+1 .. and the executed commands."""
         state_win, cmd_win = S[t - n_obs + 1: t + 1], A[t - n_obs: t]
         cam_win = {k: cams[k][:n_obs] for k in keys}  # real frames t-7 .. t
-        frames, cmds = [], []
+        frames, cmds, prev = [], [], None
         for _ in range(a.rollout):
             pred, vid = imagine(state_win, cmd_win, cam_win, task)
-            frames += list(vid[:E])
+            seg = [f.astype(np.float32) for f in vid[:E]]
+            if prev is not None:  # previous plan's frames E.. show the same ticks as this plan's frames 0..
+                k = min(a.crossfade, len(prev) - E)
+                for i in range(k):
+                    w = (i + 1) / (k + 1)
+                    seg[i] = (1 - w) * prev[E + i].astype(np.float32) + w * seg[i]
+            frames += [f.round().astype(np.uint8) for f in seg]
+            prev = vid
             cmds += list(pred[:E])
             cmd_win = pred[E - n_obs: E]                          # commands at ticks T+E-8 .. T+E-1
             state_win = pred[E - n_obs + 1 - LAG: E + 1 - LAG]    # states trail the commands by LAG ticks
@@ -249,18 +267,24 @@ def main():
                 t_start = time.perf_counter()
                 imag, cmds = dream(S, A, cams, t, task)
                 dt = time.perf_counter() - t_start
+                W, H = 512 * a.scale, 256 * a.scale
                 imag = [np.asarray(Image.fromarray(f).resize((512, 256))) for f in imag]
                 real = [np.concatenate([cams[keys[0]][n_obs + i], cams[keys[1]][n_obs + i]], 1) for i in range(len(imag))]
-                frames = [np.concatenate([label(imag[i], f"dream plan {i // E + 1} +{i + 1}"), label(real[i], f"real +{i + 1}")], 0)
-                          for i in range(len(imag))]
+                up = lambda f: np.asarray(Image.fromarray(f).resize((W, H), Image.LANCZOS)) if a.scale > 1 else f
+                who = "LoRA" if a.adapter else "base"
+                frames = [np.concatenate([
+                    label(up(imag[i]), f"DREAM ({who}{f', {a.steps} steps' if a.steps else ''}) plan {i // E + 1}/{a.rollout}"
+                                       f"  t+{(i + 1) / fps:.1f}s   scene | wrist", 12 * a.scale),
+                    label(up(real[i]), f"REAL  t+{(i + 1) / fps:.1f}s", 12 * a.scale)], 0) for i in range(len(imag))]
                 write_mp4(a.out / f"ep{e:03d}_t{t:04d}_dream{a.rollout}.mp4", frames, fps)
                 cols = [0] + [s_ * E + E - 1 for s_ in range(a.rollout)]
                 sheet_rows.append(np.concatenate([
                     np.concatenate([label(imag[i], f"ep{e} t{t} dream +{i + 1}") for i in cols], 1),
                     np.concatenate([label(real[i], f"real +{i + 1}") for i in cols], 1)], 0))
                 rec = A[t: t + len(cmds)]
+                extra = {"dream_frames": np.stack(imag), "real_frames": np.stack(real)} if a.save_frames else {}
                 np.savez_compressed(a.out / f"ep{e:03d}_t{t:04d}_dream{a.rollout}.npz", dream_cmds=cmds, real_cmds=rec,
-                                    plan_len=E, dream_frames=np.stack(imag), real_frames=np.stack(real))
+                                    plan_len=E, **extra)
                 summary.append({"episode": e, "t": t, "task": task, "rollout": a.rollout, "seconds": round(dt, 2),
                                 "dream_motion": dict(zip(J, np.round((cmds[-1] - A[t - 1]).astype(float), 1).tolist())),
                                 "real_motion": dict(zip(J, np.round((rec[-1] - A[t - 1]).astype(float), 1).tolist()))})
