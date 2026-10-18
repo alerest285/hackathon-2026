@@ -6,6 +6,11 @@ Run ON the GPU pod with the flux-action venv (not `uv run`: a sync would drop na
         docs/research/so100_imagine.py --dataset /workspace/datasets/lora_so100_pick_cube_hfsim_v1 \
         --checkpoint /workspace/ckpt/flux-3-action-so101-hfsim-norm --episodes 0 20 40 --per-episode 3
 
+A LoRA adapter loads through the server's LeRobot engine, so use the lerobot-flux3 venv:
+
+    HF_HOME=/workspace/hf /workspace/lerobot-flux3/.venv/bin/python docs/research/so100_imagine.py --dataset ... \
+        --adapter /workspace/outputs/lora/<run>/checkpoints/004000/pretrained_model --rollout 6
+
 The SO-101 policy denoises a future video and a 42-step action chunk jointly (policy._sample), then keeps only the
 actions. This script wraps the sampler to keep its final state, unpacks the video tokens (prc_vid's "(t h w) c"),
 and decodes them with the policy's own video VAE: 11 latent frames -> 41 frames of the 512x256 canvas (scene left,
@@ -37,25 +42,73 @@ import torch
 from einops import rearrange
 from PIL import Image, ImageDraw
 
-from flux_action.inference import sampling
-from flux_action.inference.so101 import load_policy
-from flux_action.processing import packing
-
 J = ["pan", "lift", "elbow", "wflex", "wroll", "grip"]
 LAG = 3  # ticks the measured state trails the command in Saad's teleop data (dream rollouts assume this tracking)
+REPO = Path(__file__).resolve().parents[2]
 CAPTURE: dict = {}
 
 
-def capturing(fn):
-    def wrapped(*args, **kwargs):
-        out = fn(*args, **kwargs)
-        CAPTURE["out"] = out
-        return out
-    return wrapped
+def capture_sampler(sampling):
+    """Keep the sampler's final state (video and action tokens); the policy itself returns only the actions."""
+    for name in ("euler", "cosmos_unipc_order2"):
+        fn = getattr(sampling, name)
+
+        def wrapped(*args, _fn=fn, **kwargs):
+            out = _fn(*args, **kwargs)
+            CAPTURE["out"] = out
+            return out
+        setattr(sampling, name, wrapped)
 
 
-sampling.euler = capturing(sampling.euler)
-sampling.cosmos_unipc_order2 = capturing(sampling.cosmos_unipc_order2)
+def flux_action_backend(checkpoint: str) -> dict:
+    """BFL's standalone loader (flux-action venv): a full policy directory, e.g. the hfsim-norm base."""
+    from flux_action.inference import sampling
+    from flux_action.inference.so101 import load_policy
+    from flux_action.processing import packing
+
+    capture_sampler(sampling)
+    policy = load_policy(checkpoint)
+    policy.set_text_encoder_offload(True)
+    policy.to("cuda")
+    cfg = policy.config
+    keys = list(cfg.camera_keys)  # images.scene, images.wrist (canvas left, right)
+    order = [0] * (cfg.n_obs_steps - 1) + [cfg.n_obs_steps - 1]
+
+    def plan(state_win, cmd_win, cam_win, task):
+        batch = {"state": torch.from_numpy(np.ascontiguousarray(state_win, np.float32))[None].cuda(),
+                 "command_history": torch.from_numpy(np.ascontiguousarray(cmd_win, np.float32))[None].cuda(),
+                 "task": [task]}
+        for k in keys:
+            win = np.stack([cam_win[k][i] for i in order]).transpose(0, 3, 1, 2)
+            batch[k] = torch.from_numpy(np.ascontiguousarray(win))[None].cuda()
+        return policy.predict_action_chunk(batch)[0].float().cpu().numpy()
+
+    return {"cfg": cfg, "keys": keys, "n_lat": packing.latent_frames(cfg.chunk_size), "vae": policy.video_vae,
+            "plan": plan, "name": f"checkpoint {checkpoint}"}
+
+
+def lerobot_backend(adapter: str) -> dict:
+    """The server's LeRobot engine (lerobot-flux3 venv): base + LoRA adapter, normalization from the adapter's
+    processors, exactly as serve.sh --engine lerobot --adapter loads it."""
+    import sys
+
+    from lerobot.policies.flux3 import modeling_flux3
+
+    capture_sampler(modeling_flux3.sampling)
+    sys.path.insert(0, str(REPO / "infra/gpu/so101"))
+    from engines.lerobot import LeRobotEngine
+
+    engine = LeRobotEngine("black-forest-labs/flux-3-action-so101", adapter=adapter, device="cuda")
+    base = engine.policy.get_base_model() if hasattr(engine.policy, "get_base_model") else engine.policy
+    cfg = base.config
+    keys = [f"images.{c}" for c in engine.cameras]
+
+    def plan(state_win, cmd_win, cam_win, task):
+        frames = {c: np.stack([cam_win[k][0], cam_win[k][cfg.n_obs_steps - 1]]) for c, k in zip(engine.cameras, keys)}
+        return np.asarray(engine.infer(state_win, cmd_win, frames, task), np.float32)
+
+    return {"cfg": cfg, "keys": keys, "n_lat": base.packer.predicted_latent_frames(cfg), "vae": base.frozen.video_vae,
+            "plan": plan, "name": f"adapter {adapter} (base {engine.meta.get('base')})"}
 
 
 def load_dataset(root: Path):
@@ -116,6 +169,8 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dataset", type=Path, required=True)
     p.add_argument("--checkpoint", default="/workspace/ckpt/flux-3-action-so101-hfsim-norm")
+    p.add_argument("--adapter", help="LoRA <ckpt>/pretrained_model: load through the server's LeRobot engine "
+                                     "(run with /workspace/lerobot-flux3/.venv/bin/python); --checkpoint is ignored")
     p.add_argument("--episodes", type=int, nargs="+", default=[0, 20, 40, 60])
     p.add_argument("--per-episode", type=int, default=3)
     p.add_argument("--task", help="caption override (default: the episode's own task)")
@@ -125,34 +180,22 @@ def main():
     a = p.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
 
-    policy = load_policy(a.checkpoint)
-    policy.set_text_encoder_offload(True)
-    policy.to("cuda")
-    cfg = policy.config
-    keys = list(cfg.camera_keys)  # images.scene, images.wrist (canvas left, right)
+    m = lerobot_backend(a.adapter) if a.adapter else flux_action_backend(a.checkpoint)
+    cfg, keys, n_lat = m["cfg"], m["keys"], m["n_lat"]
     n_obs, chunk = cfg.n_obs_steps, cfg.chunk_size
-    n_lat = packing.latent_frames(chunk)
     lh, lw = cfg.latent_hw
-    print(f"checkpoint {a.checkpoint}: cameras {keys}, latent {n_lat}x{lh}x{lw}, sampler {cfg.sampler} "
-          f"{cfg.num_inference_steps} steps, state q01 {np.round(cfg.state_normalization['q01'], 1).tolist()}", flush=True)
-
+    print(f"{m['name']}: cameras {keys}, latent {n_lat}x{lh}x{lw}, sampler {cfg.sampler} "
+          f"{cfg.num_inference_steps} steps", flush=True)
     E = cfg.n_action_steps
-    order = [0] * (n_obs - 1) + [n_obs - 1]
 
     def imagine(state_win, cmd_win, cam_win, task):
         """One plan from an 8-tick window -> (42 commands for ticks T..T+41, 41 imagined canvas frames for T+1..)."""
-        batch = {"state": torch.from_numpy(np.ascontiguousarray(state_win, np.float32))[None].cuda(),
-                 "command_history": torch.from_numpy(np.ascontiguousarray(cmd_win, np.float32))[None].cuda(),
-                 "task": [task]}
-        for k in keys:
-            win = np.stack([cam_win[k][i] for i in order]).transpose(0, 3, 1, 2)
-            batch[k] = torch.from_numpy(np.ascontiguousarray(win))[None].cuda()
         with torch.inference_mode():
-            pred = policy.predict_action_chunk(batch)[0].float().cpu().numpy()
+            pred = m["plan"](state_win, cmd_win, cam_win, task)
             tokens = CAPTURE["out"]["x_video"]  # (1, n_lat*lh*lw, 96)
             lat = rearrange(tokens[0], "(t h w) c -> c t h w", t=n_lat, h=lh, w=lw)[None]
             with torch.autocast("cuda", dtype=torch.bfloat16):
-                vid = policy.video_vae.decode(lat.to(torch.bfloat16))
+                vid = m["vae"].decode(lat.to(torch.bfloat16))
         return pred, ((vid[0].float().clamp(-1, 1) + 1) * 127.5).round().byte().permute(1, 2, 3, 0).cpu().numpy()
 
     def dream(S, A, cams, t, task):
