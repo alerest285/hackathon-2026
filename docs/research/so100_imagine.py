@@ -307,11 +307,11 @@ def main():
             sheet_rows.append(np.concatenate([np.concatenate([label(imag[i], f"ep{e} t{t} imag +{i}") for i in cols], 1),
                                               np.concatenate([label(real[i], f"real +{i}") for i in cols], 1)], 0))
             rec = A[t: t + chunk]
-            m = min(len(rec), len(pred))
+            n_cmp = min(len(rec), len(pred))
             summary.append({"episode": e, "t": t, "task": task, "seconds": round(dt, 2), "video_frames": len(vid),
-                            "pred_motion": dict(zip(J, np.round((pred[m - 1] - A[t - 1]).astype(float), 1).tolist())),
-                            "real_motion": dict(zip(J, np.round((rec[m - 1] - A[t - 1]).astype(float), 1).tolist())),
-                            "mean_abs_err": dict(zip(J, np.round(np.abs(pred[:m] - rec[:m]).mean(0).astype(float), 1).tolist()))})
+                            "pred_motion": dict(zip(J, np.round((pred[n_cmp - 1] - A[t - 1]).astype(float), 1).tolist())),
+                            "real_motion": dict(zip(J, np.round((rec[n_cmp - 1] - A[t - 1]).astype(float), 1).tolist())),
+                            "mean_abs_err": dict(zip(J, np.round(np.abs(pred[:n_cmp] - rec[:n_cmp]).mean(0).astype(float), 1).tolist()))})
             print(f"ep {e} t {t}: {dt:.1f} s, {len(vid)} imagined frames; motion over the chunk "
                   f"pred {summary[-1]['pred_motion']} real {summary[-1]['real_motion']}", flush=True)
         if sheet_rows:
