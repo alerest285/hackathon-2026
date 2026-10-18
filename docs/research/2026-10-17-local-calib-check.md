@@ -214,3 +214,24 @@ GB beside the robotpov LoRA run).
 
 Outputs: `~/hackathon-data/imagine/dream6-robotprompt-{base,lora004000}/` and `compare_robotprompt_ep075.png` /
 `_ep079.png` (rows per moment: base dream, LoRA dream, real).
+
+## 11. Which block, which side, and why dreams freeze (per-plan analysis)
+
+Per 32-tick plan (`dream_analyze.py`): commanded speed, video motion, gripper, orange/green share of the wrist view
+between the fingers, pan change (+ = robot's right). Robot-perspective prompt, episodes 20/40/75/79.
+
+- **Base model, from rest (4/4 episodes): it picks a green block and carries it to the robot's left.** It reaches
+  right (pan +10..+20), opens the gripper, the wrist view fills with green (16–25%), it closes (grip 1–7) and pans
+  left (−22..−35). In the demos the first move is the orange block on the robot's right, carried to the robot's left.
+  This matches Saad's observation: the base model does not map colour to side.
+- **LoRA 004000, from rest:** it reaches like the operator (pan right, lift +40..+56), with an orange block in view.
+  Then its commands slow to 0.5–0.9°/tick and it never opens the gripper (grip 3–12), so there is no grasp. The
+  operator also slows at that point, but opens to 27–29 around the orange block.
+- **LoRA while holding (t = 200):** ep 20 carries the orange block left (pan −35, real −56) and releases (grip 22–27),
+  which is correct. Eps 75/79 lift away (lift −51..−54) without closing or carrying, where the operator closes and
+  carries left.
+- **Freezes have two causes.** (1) Construction: each plan re-renders the scene from its own two input frames, so the
+  stitched video jumps at frames 32/64/96 (frame-diff spikes of 2–3×). (2) Model: in late plans the commanded speed
+  itself drops to 0.3–0.5°/tick and the video follows it. It hesitates near the object, made worse in a dream because
+  the arm fades to a ghost in its own frames. On the real arm the inputs are real frames, but run 3 also hovered
+  half-open near the cube.
