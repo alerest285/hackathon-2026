@@ -15,8 +15,10 @@ import asyncio
 import io
 import json
 import math
+import queue
 import socket
 import sys
+import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
@@ -160,13 +162,14 @@ def run_request(engine, req: protocol.InferRequest, cameras, chunk: int, t_recv:
     frames = decode_frames(req, cameras)
     t1 = time.perf_counter()
     actions = np.asarray(engine.infer(req.state, req.cmd_hist, frames, req.task), dtype=np.float32)
+    video = getattr(engine, "last_video", None)  # --save-latents: read here, before the next plan replaces it
     t2 = time.perf_counter()
     if actions.shape != (chunk, 6):
         raise RuntimeError(f"engine returned actions of shape {actions.shape}, expected ({chunk}, 6)")
     if not np.isfinite(actions).all():
         raise RuntimeError("engine returned non-finite actions")
     timing = {"queue_ms": (t0 - t_recv) * 1e3, "decode_ms": (t1 - t0) * 1e3, "infer_ms": (t2 - t1) * 1e3}
-    return actions, timing, frames[cameras[0]].shape[1:3]
+    return actions, timing, frames[cameras[0]].shape[1:3], video
 
 
 def make_hello(engine) -> dict:
@@ -187,6 +190,49 @@ class JsonlLog:
         self._file.write(json.dumps(line, default=_jsonable) + "\n")
 
 
+class LatentWriter:
+    """--save-latents DIR: each plan's predicted video tokens ("x_video", float16 (n_tokens, 96)) go to
+    DIR/<UTC stamp>-<id>-t<tick>.npz, written on a background thread so no reply waits for the disk. Keys: x_video,
+    id, tick, task, server_t, latent_hw (reshape "(t h w) c" with t = n_tokens / (h w), then the policy's video VAE
+    decodes them), engine, checkpoint, adapter. Plans and replies are unchanged."""
+
+    def __init__(self, directory, meta: dict):
+        self.dir = Path(directory).expanduser()
+        self.dir.mkdir(parents=True, exist_ok=True)
+        self.meta = {"engine": str(meta.get("engine_name") or ""), "checkpoint": str(meta.get("checkpoint") or ""),
+                     "adapter": str(meta.get("adapter") or ""),
+                     "latent_hw": np.asarray(meta.get("latent_hw") or [], dtype=np.int32)}
+        self.q: queue.Queue = queue.Queue(maxsize=256)
+        self.written = self.dropped = 0
+        self._thread = threading.Thread(target=self._run, name="so101-latents", daemon=True)
+        self._thread.start()
+
+    def put(self, rid: int, tick: int, task: str, video) -> None:
+        try:
+            self.q.put_nowait((int(rid), int(tick), str(task), video, time.time()))
+        except queue.Full:  # the disk fell behind: drop the latents, never the plan
+            self.dropped += 1
+
+    def _run(self) -> None:
+        while True:
+            item = self.q.get()
+            if item is None:
+                return
+            rid, tick, task, video, server_t = item
+            stamp = datetime.fromtimestamp(server_t, timezone.utc).strftime("%Y%m%dT%H%M%S")
+            path = self.dir / f"{stamp}-{rid:06d}-t{tick:06d}.npz"
+            try:
+                np.savez_compressed(path, x_video=np.asarray(video), id=rid, tick=tick, task=task, server_t=server_t,
+                                    **self.meta)
+                self.written += 1
+            except Exception as e:  # noqa: BLE001 - a full disk must not stop the server
+                say(f"WARNING: --save-latents could not write {path.name}: {type(e).__name__}: {e}")
+
+    def close(self, timeout: float = 30.0) -> None:
+        self.q.put(None)
+        self._thread.join(timeout)
+
+
 def _jsonable(obj):
     if isinstance(obj, np.ndarray):
         return np.round(obj.astype(np.float64), 4).tolist()
@@ -198,10 +244,12 @@ def _jsonable(obj):
 class PolicyServer:
     """so101.v1 over WebSocket: hello on connect, pong at once, infer on a single worker thread, replies in order."""
 
-    def __init__(self, engine, executor: ThreadPoolExecutor | None = None, log: JsonlLog | None = None):
+    def __init__(self, engine, executor: ThreadPoolExecutor | None = None, log: JsonlLog | None = None,
+                 latents: LatentWriter | None = None):
         self.engine = engine
         self.executor = executor or ThreadPoolExecutor(max_workers=1, thread_name_prefix="so101-infer")
         self.log = log
+        self.latents = latents
         self.hello = make_hello(engine)
         self.cameras = tuple(self.hello["cameras"])
         self.n_obs, self.chunk = int(self.hello["n_obs"]), int(self.hello["chunk"])
@@ -289,7 +337,7 @@ class PolicyServer:
         from websockets.exceptions import ConnectionClosed
 
         try:
-            actions, timing, hw = await fut
+            actions, timing, hw, video = await fut
         except asyncio.CancelledError:
             raise
         except protocol.ProtocolError as e:
@@ -304,6 +352,8 @@ class PolicyServer:
             await ws.send(protocol.packb(protocol.chunk(req.id, req.tick, actions, timing)))
         except ConnectionClosed:
             return
+        if self.latents is not None and video is not None:
+            self.latents.put(req.id, req.tick, req.task, video)
         say(
             f"infer id={req.id} tick={req.tick} queue {timing['queue_ms']:.1f} decode {timing['decode_ms']:.1f} "
             f"infer {timing['infer_ms']:.1f} total {timing['total_ms']:.1f} ms  {hw[0]}x{hw[1]} "
@@ -352,7 +402,7 @@ def _peer(ws) -> str:
 
 
 # ---- self-test ------------------------------------------------------------------------------------
-def selftest(engine, executor: ThreadPoolExecutor, n: int, task: str) -> bool:
+def selftest(engine, executor: ThreadPoolExecutor, n: int, task: str, latents: LatentWriter | None = None) -> bool:
     """N plans of one synthetic window through the codec, the JPEG decode and the engine, as the server runs them."""
     hello = make_hello(engine)
     cameras, chunk = tuple(hello["cameras"]), int(hello["chunk"])
@@ -381,9 +431,11 @@ def selftest(engine, executor: ThreadPoolExecutor, n: int, task: str) -> bool:
     infer_ms, decode_ms, outs, ok = [], [], [], True
     for _ in range(n):
         try:
-            actions, timing, _ = executor.submit(
+            actions, timing, _, video = executor.submit(
                 run_request, engine, req, cameras, chunk, time.perf_counter()
             ).result()
+            if latents is not None and video is not None:
+                latents.put(len(outs), 0, task, video)
         except Exception:
             traceback.print_exc()
             ok = False
@@ -445,6 +497,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     )
     p.add_argument("--steps", type=int, help="override the checkpoint's sampling steps (4)")
     p.add_argument(
+        "--save-latents",
+        metavar="DIR",
+        help="save each plan's predicted video tokens (x_video, ~0.5 MB) to DIR/<stamp>-<id>-t<tick>.npz on a "
+        "background thread, to decode offline next to the run's camera video (eval run_task.py *.times.csv)",
+    )
+    p.add_argument(
         "--norm-stats",
         metavar="JSON",
         help="state/action q01/q99 (hello keys state_q01 ... or {state: {q01, q99}, action: {...}}) that replace the "
@@ -482,7 +540,8 @@ def parse_args(argv=None) -> argparse.Namespace:
 def engine_kwargs(args: argparse.Namespace, norm_stats: dict | None = None) -> dict:
     sampling = {"guidance": tuple(args.guidance) if args.guidance else None, "steps": args.steps}
     if args.engine == "fake":
-        kw = {"mode": args.fake_mode, "latency_ms": args.fake_latency_ms, "jitter_ms": args.fake_jitter_ms, **sampling}
+        kw = {"mode": args.fake_mode, "latency_ms": args.fake_latency_ms, "jitter_ms": args.fake_jitter_ms,
+              "capture_video": bool(args.save_latents), **sampling}
         if args.fake_period_s is not None:
             kw["period_s"] = args.fake_period_s
         return kw
@@ -495,6 +554,7 @@ def engine_kwargs(args: argparse.Namespace, norm_stats: dict | None = None) -> d
         "compile": args.compile,
         "offload_text_encoder": not args.text_encoder_on_gpu,
         "norm_stats": norm_stats,
+        "capture_video": bool(args.save_latents),
         **sampling,
     }
     if args.engine == "lerobot":
@@ -532,6 +592,7 @@ def main(argv=None) -> int:
     try:
         engine = make_engine(args.engine, **engine_kwargs(args, norm_stats))
         engine.meta["norm_stats"] = norm_info  # None: the checkpoint's own normalization
+        engine.meta["save_latents"] = args.save_latents or None
         for task in tasks:  # on the worker thread, where every later plan runs
             executor.submit(engine.warmup, task).result()
     except Exception as e:
@@ -546,22 +607,31 @@ def main(argv=None) -> int:
             print("FAIL", flush=True)
         return 1
     say(f"images: jpeg/png decoded with {codec_summary()}")
-    if args.selftest:
-        return 0 if selftest(engine, executor, args.n, tasks[0]) else 1
-    log = JsonlLog(args.log_dir) if args.log_dir else None
-    server = PolicyServer(engine, executor, log)
-    say("hello " + json.dumps(server.hello_message()))
-    if log is not None:
-        say(f"logging requests to {log.path}")
-        log.write("start", hello=server.hello_message(), argv=sys.argv[1:])
+    latents = None
+    if args.save_latents:
+        latents = LatentWriter(args.save_latents, {**engine.meta, "engine_name": engine.name})
+        say(f"saving each plan's predicted video tokens to {latents.dir} (latent_hw {engine.meta.get('latent_hw')})")
     try:
-        asyncio.run(server.serve(args.host, args.port))
-    except KeyboardInterrupt:
-        say("stopped (Ctrl-C)")
-    except OSError as e:
-        say(f"ERROR: cannot listen on {args.host}:{args.port}: {e}")
-        return 1
-    return 0
+        if args.selftest:
+            return 0 if selftest(engine, executor, args.n, tasks[0], latents) else 1
+        log = JsonlLog(args.log_dir) if args.log_dir else None
+        server = PolicyServer(engine, executor, log, latents)
+        say("hello " + json.dumps(server.hello_message()))
+        if log is not None:
+            say(f"logging requests to {log.path}")
+            log.write("start", hello=server.hello_message(), argv=sys.argv[1:])
+        try:
+            asyncio.run(server.serve(args.host, args.port))
+        except KeyboardInterrupt:
+            say("stopped (Ctrl-C)")
+        except OSError as e:
+            say(f"ERROR: cannot listen on {args.host}:{args.port}: {e}")
+            return 1
+        return 0
+    finally:
+        if latents is not None:
+            latents.close()
+            say(f"latents: {latents.written} written, {latents.dropped} dropped, in {latents.dir}")
 
 
 if __name__ == "__main__":

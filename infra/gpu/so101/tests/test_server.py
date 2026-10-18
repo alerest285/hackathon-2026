@@ -491,3 +491,21 @@ def test_norm_stats_flag_reaches_the_gpu_engines_and_the_hello(tmp_path):
         capture_output=True, text=True, timeout=120,
     )
     assert out.returncode == 2 and "ERROR: --norm-stats" in out.stdout and out.stdout.strip().endswith("FAIL")
+
+
+def test_save_latents_writes_one_npz_per_plan_without_changing_the_plans(tmp_path):
+    out = subprocess.run(
+        [sys.executable, str(HERE / "server.py"), "--engine", "fake", "--selftest", "--n", "3",
+         "--save-latents", str(tmp_path / "latents")],
+        capture_output=True, text=True, timeout=120,
+    )
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "latents: 3 written, 0 dropped" in out.stdout and out.stdout.count("PASS") == 1
+    files = sorted((tmp_path / "latents").glob("*.npz"))
+    assert len(files) == 3
+    with np.load(files[0]) as z:
+        assert z["x_video"].shape == (8, 96) and z["x_video"].dtype == np.float16
+        assert z["latent_hw"].tolist() == [2, 2] and str(z["engine"]) == "fake"
+        assert int(z["tick"]) == 0 and str(z["task"]) == server.DEFAULT_TASK
+    assert server.engine_kwargs(server.parse_args(["--save-latents", "d"]))["capture_video"] is True
+    assert server.engine_kwargs(server.parse_args([]))["capture_video"] is False

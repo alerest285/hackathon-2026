@@ -14,7 +14,15 @@ from pathlib import Path
 
 import numpy as np
 
-from .base import Engine, override_sampling, pin_revision, snapshot_indices, window_order
+from .base import (
+    Engine,
+    capture_sampler_video,
+    override_sampling,
+    pin_revision,
+    snapshot_indices,
+    take_captured_video,
+    window_order,
+)
 
 
 def _git_commit(path: Path) -> str | None:
@@ -47,6 +55,7 @@ class LeRobotEngine(Engine):
         guidance: tuple[float, float] | None = None,
         steps: int | None = None,
         norm_stats: dict | None = None,
+        capture_video: bool = False,
     ):
         super().__init__()
         import lerobot
@@ -119,6 +128,11 @@ class LeRobotEngine(Engine):
             print(f"lerobot: {note}", flush=True)
         if norm_stats:
             self._apply_norm_stats(norm_stats, check_only=bool(adapter))
+        self.capture_video, self.last_video = bool(capture_video), None
+        if capture_video:
+            from lerobot.policies.flux3.f3 import sampling
+
+            capture_sampler_video(sampling)
         self.camera_keys = list(cfg.camera_order)
         self.cameras = [key.removeprefix("observation.images.") for key in self.camera_keys]
         self.snapshots = snapshot_indices(cfg.n_obs_steps, cfg.history_snapshots)
@@ -160,6 +174,7 @@ class LeRobotEngine(Engine):
             "seed": cfg.inference_seed,
             "dtype": str(cfg.dtype).removeprefix("torch."),
             "video_vae_id": cfg.video_vae_id,
+            "latent_hw": list(cfg.latent_hw),  # --save-latents: tokens reshape "(t h w) c" with t = n_tokens / (h w)
             "text_encoder_id": cfg.text_encoder_id,
             "config_video_vae_id": config_vae,
             "config_text_encoder_id": config_te,
@@ -226,4 +241,5 @@ class LeRobotEngine(Engine):
             self.pre.reset()
             prepared = self.pre(obs)
             actions = self.post(self.policy.predict_action_chunk(prepared))
+            self.last_video = take_captured_video() if self.capture_video else None
         return actions[0].float().cpu().numpy()

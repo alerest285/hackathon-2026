@@ -60,6 +60,16 @@ q99 > q01. Both engines apply it identically (bit-equal plans on the CPU fixture
 adapter carries the normalization it was trained with in its processors, so other stats refuse to start. The hello
 reports `norm_stats` (path, sha256, streams, mode) next to the effective `state_q01` ... `action_q99`.
 
+Imagination: `--save-latents DIR` keeps each plan's predicted video tokens: FLUX 3 Action denoises a future video
+together with the actions and normally discards it. They go to `DIR/<UTC stamp>-<id>-t<tick>.npz` on a background
+thread; the reply never waits for the disk, and the plans are bit-identical with and without it (CPU fixture, both
+engines). Keys: `x_video` float16 `(n_tokens, 96)`, `id`, `tick` (the client's control tick, `k` in eval's
+`ticks.jsonl`), `task`, `server_t`, `latent_hw`, `engine`, `checkpoint`, `adapter`. On the SO-101 checkpoint that is
+1408 tokens = 11 latent frames x 8x16, about 0.3 MB compressed. To decode, reshape `"(t h w) c -> c t h w"` with
+t = n_tokens / (h w) and run the policy's video VAE (41 frames of the 512x256 canvas, scene left, wrist right).
+Then align with a run through `tick` -> `ticks.jsonl` `t` -> the camera's `*.times.csv`
+(`docs/research/so100_imagine.py` decodes).
+
 ## Engines
 
 | Engine | Path | `--compile` |

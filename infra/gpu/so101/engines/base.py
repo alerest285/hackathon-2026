@@ -168,6 +168,38 @@ def override_normalization(cfg, stats: dict | None) -> list[str]:
     return notes
 
 
+_CAPTURED: dict = {}
+
+
+def capture_sampler_video(module) -> None:
+    """--save-latents: wrap module.euler and module.cosmos_unipc_order2 so each plan's final predicted video tokens
+    ("x_video" in the sampler's output) are kept for take_captured_video(). Both engines call their sampler through
+    the module attribute (flux_action.inference.sampling, lerobot.policies.flux3.f3.sampling), so the plan itself is
+    untouched. Idempotent; one inference runs at a time, so one slot is enough."""
+    for name in ("euler", "cosmos_unipc_order2"):
+        fn = getattr(module, name, None)
+        if fn is None or getattr(fn, "_so101_capture", False):
+            continue
+
+        def wrapped(*args, _fn=fn, **kwargs):
+            out = _fn(*args, **kwargs)
+            if isinstance(out, dict) and out.get("x_video") is not None:
+                _CAPTURED["x_video"] = out["x_video"]
+            return out
+
+        wrapped._so101_capture = True
+        wrapped.__wrapped__ = fn
+        setattr(module, name, wrapped)
+
+
+def take_captured_video() -> np.ndarray | None:
+    """The last plan's predicted video tokens as float16 (n_tokens, channels), or None; cleared when read."""
+    video = _CAPTURED.pop("x_video", None)
+    if video is None:
+        return None
+    return video[0].detach().float().cpu().numpy().astype(np.float16)
+
+
 def synthetic_frames(size: int = 256, seed: int = 0) -> np.ndarray:
     """Two deterministic RGB frames (2, size, size, 3) uint8: gradient, blocks and noise, so JPEG sizes are realistic."""
     rng = np.random.default_rng(seed)

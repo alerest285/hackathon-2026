@@ -66,6 +66,7 @@ class FakeEngine(Engine):
         period_s: float = PERIOD_S,
         guidance: tuple[float, float] | None = None,
         steps: int | None = None,
+        capture_video: bool = False,
     ):
         super().__init__()
         if mode not in MODES:
@@ -80,8 +81,10 @@ class FakeEngine(Engine):
         self.rng = np.random.default_rng(seed)
         self._t_start = clock()
         self._task, self._t_task = None, self._t_start
+        self.capture_video, self.last_video = bool(capture_video), None
         self.meta = {
             "checkpoint": "fake",
+            "latent_hw": [2, 2],
             "revision": None,
             "fake": {
                 "mode": mode,
@@ -126,4 +129,6 @@ class FakeEngine(Engine):
             delay_ms = max(0.0, float(self.rng.normal(self.latency_ms, self.jitter_ms)))
         if delay_ms > 0:
             time.sleep(delay_ms / 1000)
+        # --save-latents plumbing: a placeholder "video" of 2 latent frames x latent_hw 2x2, 96 channels
+        self.last_video = np.full((8, 96), len(task), dtype=np.float16) if self.capture_video else None
         return actions.astype(np.float32)

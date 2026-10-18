@@ -113,7 +113,9 @@ Server flags that change the numbers: `--compile` wraps the DiT forward in `torc
 if the compiled warmup fails. On the H100 it took plans from p50 514 ms to about 351 ms with the same sampling.
 `--guidance VIDEO ACTION` and `--steps N` override the sampler (3/3 and 4 by default; 1/1 halves the compute and
 needs a decision record). `--norm-stats <json>` replaces the state/action quantiles for zero-shot (with `--adapter` it
-only checks them, since an adapter keeps its training normalization); the hello reports the source and its sha256. `--warmup-task` can be repeated; `eval/run_hanoi.py --print-warmup` prints one per Hanoi
+only checks them, since an adapter keeps its training normalization); the hello reports the source and its sha256.
+`--save-latents DIR` saves each plan's predicted video tokens (`x_video`) per request id and tick for offline decoding,
+off the reply path; plans are unchanged. `--warmup-task` can be repeated; `eval/run_hanoi.py --print-warmup` prints one per Hanoi
 prompt. The encoder revision pinned in the checkpoint's config wins. A conflicting `--base-revision` stops the
 server before any weights load.
 

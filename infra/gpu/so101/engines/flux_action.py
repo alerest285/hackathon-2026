@@ -22,7 +22,15 @@ from pathlib import Path
 
 import numpy as np
 
-from .base import Engine, override_normalization, override_sampling, pin_revision, window_order
+from .base import (
+    Engine,
+    capture_sampler_video,
+    override_normalization,
+    override_sampling,
+    pin_revision,
+    take_captured_video,
+    window_order,
+)
 
 
 def _git_commit(path: Path) -> str | None:
@@ -54,6 +62,7 @@ class FluxActionEngine(Engine):
         guidance: tuple[float, float] | None = None,
         steps: int | None = None,
         norm_stats: dict | None = None,
+        capture_video: bool = False,
     ):
         super().__init__()
         import flux_action
@@ -86,6 +95,11 @@ class FluxActionEngine(Engine):
         policy.to(self.device)
         self.policy = policy
         cfg = policy.config
+        self.capture_video, self.last_video = bool(capture_video), None
+        if capture_video:
+            from flux_action.inference import sampling
+
+            capture_sampler_video(sampling)
         for note in override_sampling(cfg, guidance, steps) + override_normalization(cfg, norm_stats):
             print(f"flux-action: {note}", flush=True)
         cfg.validate_inference()
@@ -138,6 +152,7 @@ class FluxActionEngine(Engine):
             "gpu": gpu,
             "torch": torch.__version__,
             "flux_action_commit": _git_commit(Path(flux_action.__file__).parent),
+            "latent_hw": list(cfg.latent_hw),  # --save-latents: tokens reshape "(t h w) c" with t = n_tokens / (h w)
             "state_q01": list(cfg.state_normalization["q01"]),
             "state_q99": list(cfg.state_normalization["q99"]),
             "action_q01": list(cfg.action_normalization["q01"]),
@@ -205,4 +220,5 @@ class FluxActionEngine(Engine):
             batch[key] = torch.from_numpy(window)[None].to(dev)
         with torch.inference_mode():
             actions = self.policy.predict_action_chunk(batch)
+            self.last_video = take_captured_video() if self.capture_video else None
         return actions[0].float().cpu().numpy()
