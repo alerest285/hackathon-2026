@@ -29,3 +29,4 @@ joint space by the same map used at inference, and serve the adapter through the
 
 ## Notes and handoffs (append, newest last)
 
+- 2026-10-18 02:3xZ claude-train: pipeline done and reviewed (codex-arm-review + codex-ft-supervisor, docs/status/2026-10-17-training-restart-review.md, docs/research/2026-10-17-lora-supervisor-review.md). GPU items done: setup, probe, smoke PASS (save/resume/raw+EMA served). Two adapters trained on wog1l8ijpl3jp5: qmap run …200859-092d (stopped 4272, ckpts 000500-004000) and hfsim run …213030-6ec3 (10000/10000, EXIT 0, base /workspace/ckpt/flux-3-action-so101-hfsim-norm). Offline eval plateaued .082-.094 from step 2500 (final .093). OPEN (Saad): arm A/B with eval/run_task.py, same caption, raw before EMA, candidates 004000 / 007500 or 009500 / 010000. Serve: infra/gpu/so101/serve.sh --engine lerobot --adapter <ckpt>/pretrained_model (hfsim: native, no map). Then tick the last Done-when box.
