@@ -259,6 +259,8 @@ def main():
                     np.concatenate([label(imag[i], f"ep{e} t{t} dream +{i + 1}") for i in cols], 1),
                     np.concatenate([label(real[i], f"real +{i + 1}") for i in cols], 1)], 0))
                 rec = A[t: t + len(cmds)]
+                np.savez_compressed(a.out / f"ep{e:03d}_t{t:04d}_dream{a.rollout}.npz", dream_cmds=cmds, real_cmds=rec,
+                                    plan_len=E, dream_frames=np.stack(imag), real_frames=np.stack(real))
                 summary.append({"episode": e, "t": t, "task": task, "rollout": a.rollout, "seconds": round(dt, 2),
                                 "dream_motion": dict(zip(J, np.round((cmds[-1] - A[t - 1]).astype(float), 1).tolist())),
                                 "real_motion": dict(zip(J, np.round((rec[-1] - A[t - 1]).astype(float), 1).tolist()))})
