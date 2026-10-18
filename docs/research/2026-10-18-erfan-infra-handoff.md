@@ -2,14 +2,14 @@
 
 Requested by Ale on 2026-10-18 (Zurich). Coordinator: `alerest285/codex-ft-supervisor`.
 Recipient: `ErfanRzt`, proposed agent name `erfan-infra`, Runpod email `<redacted-email>`.
-Snapshot: 2026-10-17 23:24 UTC; recheck runtime state before any changes.
+Snapshot updated 2026-10-18 02:23 UTC; recheck runtime state before any changes.
 
 ## Access and first response
 
 - GitHub API confirms `ErfanRzt` has **write** access to `alerest285/hackathon-2026`; no repository invitation is pending.
 - There is no Erfan agent chat file yet. From your own checkout, run `scripts/setup.sh erfan-infra`, then `scripts/sync.sh`, and keep `scripts/listen.sh` running.
 - Reply with `scripts/say.sh @alerest285/codex-ft-supervisor 'erfan-infra online; <public-key location or public key>; <SSH validation result>'`.
-- GitHub currently publishes no SSH keys for `ErfanRzt`. Generate or reuse a key on **your own machine**, keep its private part there, and add the public key to your GitHub profile or send the public line through repo chat. Codex/claude-code will append the verified public key to the pod's authorized keys without restarting it. Do not send API tokens or private keys through chat, issues, or git.
+- GitHub currently publishes no SSH keys for `ErfanRzt`. Generate or reuse a key on **your own machine**, keep its private part there, and add the public key to your GitHub profile. The infrastructure owner has set up a watcher to append keys from that authenticated profile to the pod without restarting it. A pasted repo-chat name alone does not authenticate a key; keys supplied another way need identity verification. Do not send API tokens or private keys through chat, issues, or git.
 - SSH access permits setup and operation inside the existing pod. Cloud management is separate: the account owner reports Runpod organization API 403 (organizations not enabled), and the available Runpod integration has no team-invite action. A Runpod team invitation for `<redacted-email>` with **Dev** role is still outstanding. An old README saying “invite pending” is not evidence that an invitation was sent.
 
 ## Current infrastructure
@@ -33,7 +33,7 @@ Snapshot: 2026-10-17 23:24 UTC; recheck runtime state before any changes.
 
 The old pod `rmhs4cu2cejemv` and port <ssh-port> are obsolete. The replacement network volume persists across hosts; `/dev/shm` and the container root do not.
 
-At 23:22 UTC the current run had checkpoint 006000 / 10000 microsteps (1500 / 2500 optimizer updates), with raw held-out eval loss 0.0935 at 6000. Training and serving were both running under Saad's explicit `--share` decision. Do not duplicate the run, stop services, rerun environment installation, or replace shared files while these processes use them. Coordinate changes with the owners below. Concurrent serving latency is not an exclusive-GPU benchmark.
+The HF-sim run **completed at 00:23 UTC on October 18**, 10000 microsteps / 2500 optimizer updates, final raw held-out eval loss 0.0931, `EXIT 0`, last checkpoint 010000. This was independently checked on the pod at 02:23 UTC. The `so101-serve` session remains running. Do not duplicate the completed run or disrupt the active server. Coordinate new jobs, restarts and environment changes with the owners below. Earlier training shared the GPU by Saad's explicit decision; latency measured during that overlap is not an exclusive-GPU benchmark.
 
 ## First checks after SSH is authorized
 
@@ -44,7 +44,7 @@ ssh -p <ssh-port> root@<pod-host> \
   'hostname; nvidia-smi --query-gpu=name,memory.used,utilization.gpu --format=csv,noheader; tmux list-sessions; df -h /workspace /dev/shm'
 ```
 
-Confirm the training log is advancing, the selected checkpoint contains raw and EMA adapters plus `training_state`, and `/workspace/train-env.sh` points at existing paths. Do not print credential files or environment values containing tokens.
+Confirm the completed training log ends with `EXIT 0`, the selected checkpoint contains raw and EMA adapters plus `training_state`, and `/workspace/train-env.sh` points at existing paths. Check for any newer run before changes. Do not print credential files or environment values containing tokens.
 
 ## Existing setup and operations to reuse
 

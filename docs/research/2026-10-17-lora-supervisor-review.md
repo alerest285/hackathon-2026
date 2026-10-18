@@ -5,7 +5,7 @@ Review started 2026-10-17. This review uses a separate checkout and does not cha
 
 ## Status
 
-CPU review of `224a900` and `bf19469` passed: **7 preparation integration tests, 21 inference protocol tests**, and independent negative admission, short-video, and trainer-exit reproducers. GPU smoke subsequently passed save, resume and raw/EMA inference. The revised full run is still in progress; robot task success is not established.
+CPU review of `224a900` and `bf19469` passed: **7 preparation integration tests, 21 inference protocol tests**, and independent negative admission, short-video, and trainer-exit reproducers. GPU smoke passed save, resume and raw/EMA inference. The revised full run completed 10000 microsteps with EXIT 0 at 00:23 UTC on October 18, independently confirmed on the pod at 02:23 UTC. Robot task success is not established.
 
 At 19:50 UTC the replacement pod `wog1l8ijpl3jp5` had `lora_so100_pick_cube_v1`: 82 episodes, 51,922 frames, 28.8 minutes, one sorting-task caption. The recipe's 0.1 holdout gives 73 train / 9 eval episodes. That original qmap dataset identifies map `e0cab00787346a866d961d11a16dbce53eda8c992441493c883a6f157128131f` and calibration `d6d7ccc82ab2153e5aef742fcf2d96c903fe9677ad321f19a85606c4c9d619fa`. Its adapters require that map. The replacement HF-sim run below uses native coordinates and must not inherit the qmap. Both use the exact sorting caption, not the historical dataset name.
 
@@ -22,7 +22,7 @@ Read directly from the replacement pod's retained logs:
 - Run/base config and processor hashes, copied map hashes and persistent dataset-manifest hash match provenance. Model-weight and dataset-payload hashing are outside this check. No extra GPU workload was launched for the audit.
 - Latest read at 23:22 UTC: training and serving tmux sessions still exist; last checkpoint is 006000 / 10000. Raw eval_loss is 0.0807 at 5000, 0.0898 at 5500 and 0.0935 at 6000 (23:17 UTC). Training has not completed.
 
-The HF-sim checkpoint has not been independently loaded into a fresh GPU server by this reviewer while the trainer and existing server share the H100. The earlier qmap smoke establishes the save/resume/load mechanism; the artifact audit establishes the revised base/processor linkage. Physical task quality and full-run completion remain open.
+Final check at 02:23 UTC on October 18: last checkpoint 010000; raw eval_loss 0.0822 at 9000, 0.0820 at 9500, 0.0931 at 10000; log ends EXIT 0. Only the so101-serve tmux session remains. The HF-sim checkpoint has not been independently loaded into a fresh GPU server by this reviewer. The earlier qmap smoke establishes the save/resume/load mechanism; the artifact audit establishes the revised base/processor linkage. Physical task quality remains open.
 
 ## Findings sent to the owner
 
@@ -57,7 +57,7 @@ Saad's agent reports the original-pod probe reached 40 microsteps, exit 0, 33.2 
 
 ## Evidence still required
 
-1. Completion and controlled inference evaluation of the revised HF-sim run; raw versus EMA under the same protocol.
+1. Controlled inference evaluation of the completed HF-sim run; raw versus EMA under the same protocol.
 2. Recovery after volatile dataset storage is lost, beyond ordinary smoke resume.
 3. Physical validation and controlled robot trials with the coordinate/normalization contract belonging to the chosen adapter. Measure serving latency with the training workload absent. A low training loss or server selftest does not establish task success.
 
