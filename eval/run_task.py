@@ -2,7 +2,7 @@
 
     uv run --project eval python eval/run_task.py --fake --attempts 2                       # no hardware
     uv run --project eval python eval/run_task.py --port /dev/ttyACM1 --robot-id my_follower_arm   # dry run
-    uv run --project eval python eval/run_task.py --live --limits ~/hackathon-data/so100_phys_limits.json \\
+    uv run --project eval python eval/run_task.py --live --limits ~/hackathon-data/maps/so100_phys_limits.json \\
         --port /dev/ttyACM1 --robot-id my_follower_arm --label zero-shot
     uv run --project eval python eval/run_task.py --print-warmup     # the GPU serve commands for this instruction
 

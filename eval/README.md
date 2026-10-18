@@ -82,11 +82,11 @@ refusals, video, ticks, chunks and the LeRobot dataset of attempts.
 uv run --project eval python eval/run_task.py --print-warmup
 
 # zero-shot, HF-sim normalization (server --norm-stats or the hfsim-norm checkpoint): no joint map, native degrees
-uv run --project eval python eval/run_task.py --live --limits ~/hackathon-data/so100_phys_limits.json \
+uv run --project eval python eval/run_task.py --live --limits ~/hackathon-data/maps/so100_phys_limits.json \
     --port /dev/ttyACM1 --robot-id my_follower_arm --steps 4 --attempts 10 --label zero-shot
 
 # the LoRA adapter behind the same normalization; a qmap-trained adapter needs --mapping <its qmap> instead
-uv run --project eval python eval/run_task.py --live --limits ~/hackathon-data/so100_phys_limits.json \
+uv run --project eval python eval/run_task.py --live --limits ~/hackathon-data/maps/so100_phys_limits.json \
     --port /dev/ttyACM1 --robot-id my_follower_arm --steps 4 --attempts 10 --label lora-raw
 
 # one comparison table across runs (Hanoi runs and task runs print as two tables)
