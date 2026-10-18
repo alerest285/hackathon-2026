@@ -140,3 +140,18 @@ checkpoint's action stats, so native step sizes run ×[1.04, 1.44, 1.36, 1.72, 0
 needs a server option that overrides `state_normalization`/`action_normalization`.
 
 Frame recorder for the next run: [`so100_watch.py`](so100_watch.py) (`record` beside the console, then `sheet`).
+
+## 7. What the zero-shot model imagines (2026-10-18, `so100_imagine.py`)
+
+Zero-shot hfsim model (`/workspace/ckpt/flux-3-action-so101-hfsim-norm`), 16 moments from Saad's episodes 0/20/40/60
+(live 8-tick windows, the episode's sorting caption). The video the sampler generates alongside the actions was decoded
+with the policy's own VAE: 11 latent frames, 41 frames of scene|wrist, 0.6 s per moment on the H100. Outputs:
+`/workspace/outputs/imagine/zeroshot-hfsim/`, copied to `~/hackathon-data/imagine/zeroshot-hfsim/` on Saad's laptop.
+
+- **Perception is good.** The imagined frames keep the scene consistent (black line, tray, orange and green blocks),
+  render the arm moving the way its predicted actions say, and keep a grasped block between the fingers (ep 20 t 187,
+  ep 40 t 464).
+- **Intent is weak.** Against what the operator did next, the predicted 42-step motion pointed the same way on 54% of
+  moving joints (50 joint-moments; elbow 25%, wrist_flex 75%), with about half the real amplitude. The model often
+  imagines holding still or lifting where the operator carried the block to its side of the line. 16 moments are a
+  small sample, and a human demo is only one valid continuation.
