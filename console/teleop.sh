@@ -23,7 +23,9 @@ while [ $# -gt 0 ]; do case "$1" in
   --episode-s) episode_s="$2"; shift 2 ;; --reset-s) reset_s="$2"; shift 2 ;; --dataset) dsname="$2"; shift 2 ;;
   *) echo "unknown option $1" >&2; exit 2 ;; esac; done
 [ -n "$follower" ] && [ -n "$leader" ] || { sed -n 2,13p "$0"; exit 2; }
-cams="{scene: {type: opencv, index_or_path: $scene, width: 640, height: 480, fps: 30}, wrist: {type: opencv, index_or_path: $wrist, width: 640, height: 480, fps: 30}}"
+# warmup_s 3: the Global Shutter scene camera needs ~1.7 s for its first frame on macOS (LeRobot's default 1 s times out).
+warm="${CAM_WARMUP_S:-3}"
+cams="{scene: {type: opencv, index_or_path: $scene, width: 640, height: 480, fps: 30, warmup_s: $warm}, wrist: {type: opencv, index_or_path: $wrist, width: 640, height: 480, fps: 30, warmup_s: $warm}}"
 # use_degrees=true on both arms: joints in degrees, gripper 0..100, the units the model and the console use.
 common=(--robot.type="$rtype" --robot.port="$follower" --robot.id="$robot_id" --robot.use_degrees=true --robot.cameras="$cams"
         --teleop.type="$ttype" --teleop.port="$leader" --teleop.id="$leader_id" --teleop.use_degrees=true)
